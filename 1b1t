@@ -11,6 +11,7 @@
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import socket
@@ -23,7 +24,7 @@ import urllib.request
 APP = "1b1t-open-server"
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
-BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}"
+BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
 BMCL_SERVER_JAR = "https://bmclapi2.bangbang93.com/version/{vid}/server"
 RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/console.log
 IS_WIN = (os.name == "nt")
@@ -339,9 +340,9 @@ def java_install_hint(need):
     return f"apt install openjdk-{need}-jdk"
 
 
-def pick_java(version):
-    """为 MC 版本找匹配的 Java, 找不到则报错退出"""
-    need = java_major_for(version)
+def pick_java(version, java_major=None):
+    """为 MC 版本找匹配的 Java (优先官方 javaVersion 字段), 找不到则报错退出"""
+    need = java_major or java_major_for(version)
     javas = detect_javas()
     if need in javas:
         return javas[need][0]
@@ -435,8 +436,13 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
     return True
 
 
-def get_server_jar(version, dest):
-    """下载对应版本的官方服务端, 优先 BMCLAPI 镜像, 失败回退 Mojang"""
+_VERSION_INFO_CACHE = {}
+
+
+def get_version_info(version):
+    """拉取版本详情 json (含 downloads/javaVersion), 内存缓存"""
+    if version in _VERSION_INFO_CACHE:
+        return _VERSION_INFO_CACHE[version]
     info = {}
     try:
         req = urllib.request.Request(BMCL_VERSION.format(vid=version),
@@ -445,6 +451,14 @@ def get_server_jar(version, dest):
             info = json.loads(r.read().decode())
     except Exception:
         pass
+    _VERSION_INFO_CACHE[version] = info
+    return info
+
+
+def get_server_jar(version, dest, info=None):
+    """下载对应版本的官方服务端, 优先 BMCLAPI 镜像, 失败回退 Mojang"""
+    if info is None:
+        info = get_version_info(version)
     sha1 = info.get("downloads", {}).get("server", {}).get("sha1")
     size = info.get("downloads", {}).get("server", {}).get("size")
     url = info.get("downloads", {}).get("server", {}).get("url") or ""
@@ -534,6 +548,37 @@ def send_console(server_dir, line, timeout=10):
         return False
 
 
+def attach_console(server_dir):
+    """接入服务器控制台: 实时日志 + 命令直发, exit/Ctrl+C 退出(不关服)"""
+    log = os.path.join(server_dir, "logs", "latest.log")
+    pos = os.path.getsize(log) if os.path.exists(log) else 0
+    print(c("已接入控制台: 直接输入命令执行, exit 或 Ctrl+C 退出(服务器继续运行)",
+            "green"))
+    try:
+        while True:
+            if os.path.exists(log):
+                size = os.path.getsize(log)
+                if size > pos:
+                    with open(log, errors="ignore") as f:
+                        f.seek(pos)
+                        sys.stdout.write(f.read())
+                    sys.stdout.flush()
+                    pos = size
+            if select.select([sys.stdin], [], [], 0.2)[0]:
+                line = sys.stdin.readline()
+                if not line:
+                    break  # stdin EOF
+                line = line.strip()
+                if not line:
+                    continue
+                if line.lower() in ("exit", "quit"):
+                    break
+                send_console(server_dir, line)
+    except KeyboardInterrupt:
+        print()
+    print(c("已退出控制台(服务器仍在运行)", "yellow"))
+
+
 def wait_ready(server_dir, timeout=180):
     """等待服务器启动完成(日志出现 Done)"""
     log = os.path.join(server_dir, "logs", "latest.log")
@@ -570,12 +615,35 @@ LOG_PATTERNS = [
 
 
 def parse_ram(ram):
-    """'2G'/'1024M' → MB"""
+    """'2G'/'1024M'/'2'(纯数字按G) → MB"""
     m = re.match(r"(\d+)([GM]?)", str(ram).upper())
     if not m:
         return None
     n = int(m.group(1))
-    return n * 1024 if m.group(2) == "G" else n
+    return n * 1024 if m.group(2) in ("G", "") else n
+
+
+def total_mem_mb():
+    """整机总内存 MB (Linux/Windows/macOS), 失败返回 None"""
+    try:
+        if os.path.exists("/proc/meminfo"):  # Linux
+            with open("/proc/meminfo") as f:
+                m = re.search(r"MemTotal:\s+(\d+)", f.read())
+            return int(m.group(1)) // 1024 if m else None
+        if IS_WIN:  # Windows
+            import ctypes
+            n = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(
+                ctypes.byref(n))
+            return int(n.value) // 1024
+        if sys.platform == "darwin":  # macOS
+            out = subprocess.run(["sysctl", "-n", "hw.memsize"],
+                                 capture_output=True, text=True,
+                                 timeout=10).stdout.strip()
+            return int(out) // 1048576
+    except Exception:
+        pass
+    return None
 
 
 def avail_mem_mb():
@@ -734,7 +802,7 @@ def start_server(server_dir, cfg, wait=True):
     rt = runtime_dir(server_dir)
     os.makedirs(rt, exist_ok=True)
 
-    java = pick_java(cfg["version"])
+    java = pick_java(cfg["version"], cfg.get("java"))
     ram = cfg.get("ram", "2G")
     console_log = open(os.path.join(rt, "console.log"), "ab")
 
@@ -770,10 +838,11 @@ def start_server(server_dir, cfg, wait=True):
 
 
 def do_start(server_dir, dry_run=False):
-    """start: 有配置直接开, 无配置走向导"""
-    cfg = load_cfg(server_dir)
+    """start: 有配置直接开, 无配置走向导 (server_dir=None 时向导里选位置)"""
+    cfg = load_cfg(server_dir) if server_dir else None
     if cfg is None:
         cfg = wizard(server_dir)
+        server_dir = cfg.pop("dir")
     else:
         print(c(f"已找到配置: MC {cfg['version']} 端口 {cfg['port']} "
                 f"内存 {cfg.get('ram','2G')}", "cyan"))
@@ -782,6 +851,12 @@ def do_start(server_dir, dry_run=False):
     old = read_pid(server_dir)
     if old and is_running(old["pid"]):
         sys.exit(c(f"[错误] 服务器已在运行 (PID {old['pid']})", "red"))
+
+    # 版本详情: 用官方 javaVersion 字段精确匹配 Java
+    info = get_version_info(cfg["version"])
+    java_major = info.get("javaVersion", {}).get("majorVersion")
+    if java_major:
+        cfg["java"] = java_major
 
     # 写 eula + 配置
     with open(os.path.join(server_dir, "eula.txt"), "w") as f:
@@ -795,11 +870,11 @@ def do_start(server_dir, dry_run=False):
         return
 
     # 先确认 Java 匹配, 再下载
-    pick_java(cfg["version"])
+    pick_java(cfg["version"], cfg.get("java"))
 
     # 下载核心
     jar = os.path.join(server_dir, "server.jar")
-    if not get_server_jar(cfg["version"], jar):
+    if not get_server_jar(cfg["version"], jar, info):
         sys.exit(c("[错误] 服务端下载失败", "red"))
 
     print(c(f"\n正在启动: MC {cfg['version']} 端口 {cfg['port']} "
@@ -820,6 +895,9 @@ def do_start(server_dir, dry_run=False):
             print(c("  等待就绪超时, 游戏规则未注入(可用 console 命令手动设置)", "yellow"))
             diagnose(server_dir, cfg)
     print(c(f"\n完成! 关服: 1b1t-open-server stop {server_dir}", "green"))
+    # 交互终端下自动接入控制台 (管道/脚本则跳过)
+    if sys.stdin.isatty():
+        attach_console(server_dir)
 
 
 def do_stop(server_dir):
@@ -888,35 +966,8 @@ def do_status(server_dir):
 
 # ---------- 向导 ----------
 
-def wizard(server_dir):
-    """交互式四步向导 + 高级选项, 返回配置 dict"""
-    print(c(BANNER, "cyan"))
-
-    ver = pick_version()["id"]
-
-    if server_dir is None:
-        step(2, "选择服务器位置")
-        default_dir = os.path.expanduser(f"~/1b1t-{ver}")
-        server_dir = os.path.abspath(
-            ask(f"  服务器目录", default_dir))
-    os.makedirs(server_dir, exist_ok=True)
-    print(f"  目录: {c(server_dir, 'green')}")
-    if os.listdir(server_dir):
-        print(c("  注意: 目录非空, 已有文件不会被覆盖(server.properties 除外)", "yellow"))
-
-    step(3, "选择端口")
-    port = ask("  端口", "25565")
-    if not port.isdigit() or not 1 <= int(port) <= 65535:
-        sys.exit(c("[错误] 端口无效", "red"))
-
-    step(4, "常见配置 (回车=默认)")
-    props = {}
-    props["server-port"] = port
-    props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
-    props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
-    keep = ask_bool("  死亡不掉落", False)
-    props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
-    # 难度: 中文表格 + 数字选择
+def pick_difficulty():
+    """难度选择: 中文表格 + 数字"""
     print(c("  难度(数字选择):", "cyan"))
     print_table([
         ("编号", "难度", "说明"),
@@ -928,27 +979,92 @@ def wizard(server_dir):
     while True:
         ans = ask("  选择", "3")
         if ans in ("1", "2", "3", "4"):
-            props["difficulty"] = ("peaceful", "easy", "normal", "hard")[int(ans) - 1]
-            break
+            return ("peaceful", "easy", "normal", "hard")[int(ans) - 1]
         if ans.lower() in ("peaceful", "easy", "normal", "hard"):
-            props["difficulty"] = ans.lower()
-            break
+            return ans.lower()
         print(c("  请输入 1-4 或英文难度名", "red"))
-    props["max-players"] = ask("  最大玩家数", "20")
-    props["view-distance"] = ask("  视距", "10")
-    props["white-list"] = str(ask_bool("  白名单", False)).lower()
-    props["pvp"] = str(ask_bool("  PVP", True)).lower()
-    props["level-seed"] = ask("  种子(空=随机)", "")
-    ram = ask("  内存上限(如 2G/1024M)", "2G")
 
-    advanced_editor(props)
 
-    cfg = {"version": ver, "port": int(port), "ram": ram, "props": props,
-           "gamerules": {}}
+def pick_ram():
+    """内存上限选择: 整机空闲内存 70% 以下的档位, 可自定义"""
+    total = total_mem_mb()
+    avail = avail_mem_mb()
+    cap = int((avail or 2048) * 0.7)  # 上限 = 空闲的70%
+    tiers = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    opts = [t for t in tiers if t <= cap][-4:] or [1024]
+    info = ""
+    if total and avail:
+        info = f"整机{total // 1024}G 空闲{avail // 1024}G"
+    print(c(f"  内存上限 {info} (最大建议 = 空闲70%):", "cyan"))
+    for i, t in enumerate(opts):
+        mark = c("(推荐)", "green") if i == len(opts) - 1 else ""
+        print(f"    {i+1}. {t // 1024}G {mark}")
+    print(f"    也可以直接输入, 如 4G/512M (纯数字按G算)")
+    while True:
+        ans = ask("  选择", str(len(opts)))
+        if ans.isdigit() and 1 <= int(ans) <= len(opts):
+            return f"{opts[int(ans) - 1] // 1024}G"
+        if re.match(r"^\d+[GM]?$", ans, re.I):
+            return ans.upper() + ("G" if not re.search(r"[GM]", ans, re.I) else "")
+        print(c("  无效, 请输入序号或如 4G/512M", "red"))
+
+
+def wizard(server_dir):
+    """交互式向导, 返回配置 dict(含 dir 字段)"""
+    print(c(BANNER, "cyan"))
+
+    ver = pick_version()["id"]
+
+    if server_dir is None:
+        step(2, "选择服务器位置")
+        server_dir = os.path.abspath(
+            ask("  服务器目录", os.path.expanduser(f"~/1b1t-{ver}")))
+    os.makedirs(server_dir, exist_ok=True)
+    print(f"  目录: {c(server_dir, 'green')}")
+    if os.listdir(server_dir):
+        print(c("  注意: 目录非空, 已有文件不会被覆盖(server.properties 除外)", "yellow"))
+
+    step(3, "选择端口")
+    port = ask("  端口", "25565")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        sys.exit(c("[错误] 端口无效", "red"))
+
+    step(4, "配置 (回车=默认)")
+    print(c("  配置模式:", "cyan"))
+    print_table([
+        ("模式", "包含内容"),
+        ("1 简单", "最常用5项: 正版验证/死亡不掉落/难度/MOTD/内存"),
+        ("2 高级", "全部11项 + server.properties 全项编辑"),
+    ])
+    mode = ask("  选择", "1")
+    props = {"server-port": port}
+    keep = False
+    if mode == "1":  # 简单: 只问最常用的
+        props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
+        keep = ask_bool("  死亡不掉落", False)
+        props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
+        props["difficulty"] = pick_difficulty()
+        ram = pick_ram()
+    else:  # 高级: 全部 11 项 + 全项编辑
+        props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
+        props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
+        keep = ask_bool("  死亡不掉落", False)
+        props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
+        props["difficulty"] = pick_difficulty()
+        props["max-players"] = ask("  最大玩家数", "20")
+        props["view-distance"] = ask("  视距", "10")
+        props["white-list"] = str(ask_bool("  白名单", False)).lower()
+        props["pvp"] = str(ask_bool("  PVP", True)).lower()
+        props["level-seed"] = ask("  种子(空=随机)", "")
+        ram = pick_ram()
+        advanced_editor(props)
+
+    cfg = {"dir": server_dir, "version": ver, "port": int(port), "ram": ram,
+           "props": props, "gamerules": {}}
     if keep:
         cfg["gamerules"]["keepInventory"] = "true"
 
-    step(6, "确认")
+    step(5, "确认")
     print(f"  MC 版本: {c(ver, 'green')}    端口: {c(port, 'green')}    "
           f"内存: {c(ram, 'green')}")
     print(f"  目录: {c(server_dir, 'green')}")
@@ -959,17 +1075,85 @@ def wizard(server_dir):
 
 # ---------- 入口 ----------
 
+def find_servers():
+    """扫描 ~ 下含 .1b1t-open-server/config.json 的目录"""
+    found = []
+    seen = set()
+    home = os.path.expanduser("~")
+    try:
+        entries = os.listdir(home)
+    except OSError:
+        return found
+    for entry in entries:
+        d = os.path.join(home, entry)
+        if not os.path.isdir(d) or entry.startswith("."):
+            continue
+        if load_cfg(d):
+            rp = os.path.realpath(d)
+            if rp not in seen:
+                seen.add(rp)
+                found.append(d)
+    return found
+
+
+def main_menu():
+    """无参数时的主菜单: 开服/启动/删除/状态"""
+    print(c(BANNER, "cyan"))
+    while True:
+        servers = find_servers()
+        print(c("\n[主菜单]", "bold"))
+        print("  1. 开服向导 (新服务器)")
+        print("  2. 启动服务器 (已有服务器)")
+        print("  3. 删除服务器")
+        print("  4. 查看状态")
+        print("  0. 退出")
+        ans = ask("  选择", "1")
+        if ans == "1":
+            do_start(None)
+            return
+        if ans == "0":
+            sys.exit(0)
+        if ans not in ("2", "3", "4"):
+            print(c("  无效选择", "red"))
+            continue
+        if not servers:
+            print(c("  没有找到已有服务器 (也可用: 1b1t start <目录>)", "yellow"))
+            continue
+        print(c("  已有服务器:", "cyan"))
+        for i, d in enumerate(servers):
+            c0 = load_cfg(d)
+            print(f"    {i+1}. {d}  (MC {c0['version']})")
+        print("    也可以直接输入目录路径")
+        choice = ask("  选择")
+        if choice.isdigit() and 1 <= int(choice) <= len(servers):
+            d = servers[int(choice) - 1]
+        else:
+            d = os.path.abspath(os.path.expanduser(choice))
+        if ans == "2":
+            do_start(d)
+            return
+        if ans == "3":
+            if ask_bool(c(f"  确认删除整个目录 {d}? 不可恢复!", "red"), False):
+                shutil.rmtree(d, ignore_errors=True)
+                print(c("已删除", "green"))
+            continue
+        if ans == "4":
+            do_status(d)
+            continue
+
+
 def usage():
     print(f"""用法: {APP} [命令] [参数]
 
-  无参数 / start     一键开服(无配置时进入向导: 版本→目录→端口→配置→高级选项)
+  无参数             主菜单: 开服向导/启动服务器/删除服务器/查看状态
+  start              开服向导(选版本→目录→端口→配置, 简单/高级模式)
   start <目录>       按已有配置开服
   stop <目录>        关服(默认当前目录)
   restart <目录>     重启
   status <目录>      查看状态
   doctor <目录>      自主排查问题(开服失败时也会自动运行)
   console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
-  其他: --dry-run 只生成配置, 不下载不启动""")
+  其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)""")
 
 
 def main():
@@ -991,6 +1175,14 @@ def main():
             return do_console(server_dir, " ".join(args))
     elif cmd == "console":
         sys.exit("console 需要: console <目录> <命令>")
+
+    if cmd == "start" and server_dir is None:
+        # 纯 1b1t → 主菜单(开服/启动/删除/状态); 1b1t start → 向导里选位置
+        if len(sys.argv) == 1:
+            main_menu()
+            return 0
+        do_start(None, dry_run=dry_run)
+        return 0
 
     if server_dir is None:
         server_dir = os.getcwd()
