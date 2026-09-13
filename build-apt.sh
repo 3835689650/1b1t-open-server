@@ -7,7 +7,10 @@ set -euo pipefail
 VER="${1:-1.0.0}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SITE_SRC="${SITE_SRC:-$ROOT/../openmc-pan-build/1b1t/index.html}"
-SITE_DST="/www/wwwroot/openmcserver.cn/1b1t/index.html"
+SITE_DST="/www/wwwroot/www.1b1t.cn/index.html"
+MIRROR_PANEL_SRC="${MIRROR_PANEL_SRC:-$ROOT/../openmc-pan-build/mirror/index.php}"
+APT_DST="/www/wwwroot/www.1b1t.cn/1b1t-apt"
+APT_DST_OLD="/www/wwwroot/openmcserver.cn/1b1t-apt"  # 旧地址保留兼容
 REPO="3835689650/1b1t-open-server"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -145,18 +148,23 @@ else
     echo "  未找到官网源码, 跳过 ($SITE_SRC)"
 fi
 
-echo "==> 6/6 同步 apt 仓库到官网(国内主源)"
-APT_DST="/www/wwwroot/openmcserver.cn/1b1t-apt"
+echo "==> 6/6 同步 apt 仓库 + 镜像面板到官网"
 if [ -d "$(dirname "$APT_DST")" ]; then
-    sudo mkdir -p "$APT_DST"
+    sudo mkdir -p "$APT_DST" "$(dirname "$APT_DST")/mirror"
     sudo cp -r "$ROOT"/apt/. "$APT_DST"/
-    sudo chown -R www:www "$APT_DST"
-    echo "  已同步: https://openmcserver.cn/1b1t-apt/"
+    [ -f "$MIRROR_PANEL_SRC" ] && sudo cp "$MIRROR_PANEL_SRC" "$(dirname "$APT_DST")/mirror/"
+    sudo chown -R www:www "$APT_DST" "$(dirname "$APT_DST")/mirror"
+    echo "  已同步: https://www.1b1t.cn/1b1t-apt/"
 else
     echo "  未找到站点目录, 跳过"
 fi
+if [ -d "$(dirname "$APT_DST_OLD")" ]; then  # 旧地址保留兼容
+    sudo mkdir -p "$APT_DST_OLD"
+    sudo cp -r "$ROOT"/apt/. "$APT_DST_OLD"/
+    sudo chown -R www:www "$APT_DST_OLD"
+fi
 
 echo "完成! 安装方法:"
-echo "  curl -fsSL https://openmcserver.cn/1b1t/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
-echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://openmcserver.cn/1b1t-apt/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
+echo "  curl -fsSL https://www.1b1t.cn/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
+echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://www.1b1t.cn/1b1t-apt/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
 echo "  sudo apt update && sudo apt install 1b1t-open-server"
