@@ -139,9 +139,9 @@ assert re.search(pat, page, re.S), "官网缺少 CHANGELOG_START/END 标记"
 page = re.sub(
     pat, "<!-- CHANGELOG_START -->\n" + rendered + "\n  <!-- CHANGELOG_END -->",
     page, flags=re.S)
-# 顶部版本徽章同步为最新版本
+# 顶部版本徽章同步为最新版本 (entries[0][0] 已含 v 前缀)
 if entries:
-    page = re.sub(r'(badge">)v[\d.]+', rf"\1v{entries[0][0]}", page)
+    page = re.sub(r'(badge">)v+[\d.]+', rf"\1{entries[0][0]}", page)
 open(site, "w").write(page)
 print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 {entries[0][0]}")
 PY
