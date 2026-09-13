@@ -1359,6 +1359,15 @@ def pick_difficulty():
         print(c("  请输入 1-4 或英文难度名", "red"))
 
 
+def default_ram():
+    """不询问, 直接取空闲内存 70% 内的最大档位"""
+    avail = avail_mem_mb()
+    cap = int((avail or 2048) * 0.7)
+    tiers = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    opts = [t for t in tiers if t <= cap][-4:] or [1024]
+    return f"{opts[-1] // 1024}G"
+
+
 def pick_ram():
     """内存上限选择: 整机空闲内存 70% 以下的档位, 可自定义"""
     total = total_mem_mb()
@@ -1410,19 +1419,19 @@ def wizard(server_dir):
     step(4, "配置 (回车=默认)")
     print(c("  配置模式:", "cyan"))
     print_table([
-        ("模式", "包含内容"),
-        ("1 简单", "最常用5项: 正版验证/死亡不掉落/难度/MOTD/内存"),
-        ("2 高级", "全部11项 + server.properties 全项编辑"),
+        ("模式", "说明"),
+        ("1 简单", "不询问, 全部用默认值直接开 (新手推荐)"),
+        ("2 高级", "逐项询问 11 项配置 + server.properties 全项编辑"),
     ])
     mode = ask("  选择", "1")
     props = {"server-port": port}
     keep = False
-    if mode == "1":  # 简单: 只问最常用的
-        props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
-        keep = ask_bool("  死亡不掉落", False)
-        props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
-        props["difficulty"] = pick_difficulty()
-        ram = pick_ram()
+    if mode == "1":  # 简单: 不询问, 全部默认 (正版验证开/普通难度/自动内存)
+        props["online-mode"] = "true"
+        props["motd"] = "1b1t Server"
+        props["difficulty"] = "normal"
+        ram = default_ram()
+        print(c(f"  使用默认配置: 正版验证开 · 普通难度 · 内存 {ram} (自动)", "cyan"))
     else:  # 高级: 全部 11 项 + 全项编辑
         props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
         props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
