@@ -48,9 +48,13 @@ cd "$ROOT/apt/dists/stable"
     echo "Components: main"
     echo "Date: $(date -R -u)"
     echo "Valid-Until: $(date -R -u -d '+1 year')"
-    echo "SHA256:"
-    sha256sum main/binary-all/Packages main/binary-all/Packages.gz \
-        | sed 's|\./||; s|^| |; s|  | |'
+    for algo in sha256sum sha512sum; do
+        echo "${algo%sum}:"
+        for f in main/binary-all/Packages main/binary-all/Packages.gz; do
+            read h _ <<< "$($algo "$f")"
+            echo " $h $(stat -c%s "$f") $f"
+        done
+    done
 } > Release
 gpg --batch --yes --digest-algo SHA512 --personal-digest-preferences SHA512 \
     --clearsign -o InRelease Release
