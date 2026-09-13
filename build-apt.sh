@@ -126,14 +126,18 @@ def render(ver, date, body):
         items = "".join(f"<li>{i[2:]}</li>" for i in m.group(2).strip().splitlines())
         html.append(f'<div class="tag">{m.group(1)}</div><ul>{items}</ul>')
     return "\n".join(html)
-rendered = "\n".join(render(*e) for e in entries[:3])
+rendered = "\n".join(render(*e) for e in entries)
 page = open(site).read()
 pat = r"<!-- CHANGELOG_START -->.*?<!-- CHANGELOG_END -->"
 assert re.search(pat, page, re.S), "官网缺少 CHANGELOG_START/END 标记"
-open(site, "w").write(re.sub(
+page = re.sub(
     pat, "<!-- CHANGELOG_START -->\n" + rendered + "\n  <!-- CHANGELOG_END -->",
-    page, flags=re.S))
-print("  已注入最新 3 个版本条目")
+    page, flags=re.S)
+# 顶部版本徽章同步为最新版本
+if entries:
+    page = re.sub(r'(badge">)v[\d.]+', rf"\1v{entries[0][0]}", page)
+open(site, "w").write(page)
+print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 {entries[0][0]}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
     echo "  官网已部署: https://openmcserver.cn/1b1t/"
