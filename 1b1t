@@ -207,9 +207,41 @@ def load_manifest(force=False):
         return [{"id": v, "type": "release", "url": ""} for v in FALLBACK_VERSIONS]
 
 
+# 版本特性参考: (版本范围, 优点, 缺点, 最低配置)
+VERSION_INFO = [
+    ("1.8.x", "经典PvP手感 插件生态最大 配置要求极低", "内容老 安全性较差(需防假人)", "1核/2G/10G"),
+    ("1.12.x", "mod生态最大最成熟 配置低", "内容旧(无1.13海洋更新)", "2核/3G/20G"),
+    ("1.16.x", "下界更新 mod双平台生态全", "资源占用较1.12明显提高", "2核/4G/30G"),
+    ("1.17-1.19", "洞穴悬崖更新 内容新 活跃", "1.18起世界高度翻倍吃内存", "2核/4-6G/40G"),
+    ("1.20.x", "社区活跃 插件/mod支持全", "1.20.5+必须Java21", "4核/6G/50G"),
+    ("1.21.x+", "最新内容 长期更新", "最吃资源 部分老插件未适配", "4核/8G/60G"),
+]
+
+
+def dw(s):
+    """字符串显示宽度(中日韩字符算2)"""
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
+
+
+def version_table():
+    """打印版本优点/缺点/最低配置表格"""
+    rows = [("版本", "优点", "缺点", "最低配置")] + [list(r) for r in VERSION_INFO]
+    widths = [max(dw(r[i]) for r in rows) + 2 for i in range(4)]
+    line = "  +" + "+".join("-" * w for w in widths) + "+"
+    print(line)
+    for i, r in enumerate(rows):
+        print("  |" + "|".join(" " + r[j] + " " * (widths[j] - dw(r[j]) - 1)
+                               for j in range(4)) + "|")
+        if i == 0:
+            print(line)
+    print(line)
+
+
 def pick_version():
-    """① 选择版本: 列出最近正式版, 也可直接输入任意版本号"""
+    """① 选择版本: 版本特性表格 + 最近正式版列表, 也可直接输入任意版本号"""
     step(1, "选择 Minecraft 版本")
+    print(c("  版本特性参考:", "cyan"))
+    version_table()
     versions = load_manifest()
     releases = [v for v in versions if v["type"] == "release"]
     by_id = {v["id"]: v for v in versions}
