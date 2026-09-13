@@ -24,8 +24,8 @@ import urllib.request
 
 # 本地安装包镜像目录 (下载过的文件缓存到这里, 下次直接从本地取)
 MIRROR_DIR = os.path.expanduser("~/1b1t-mirror")
-# 镜像的 HTTP 出口 (openmcserver.cn/serverdown, 其他机器走隧道下载)
-MIRROR_HTTP = "https://openmcserver.cn/serverdown/"
+# 镜像的 HTTP 出口 (www.1b1t.cn/serverdown, 其他机器走隧道下载)
+MIRROR_HTTP = "https://www.1b1t.cn/serverdown/"
 # 软件设置文件 (settings 子命令修改)
 SETTINGS_FILE = os.path.expanduser("~/.config/1b1t-open-server/settings.json")
 SETTING_DEFAULTS = {
