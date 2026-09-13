@@ -2,6 +2,16 @@
 
 每个版本标注: 新增了什么 / 修复了什么。
 
+## v1.0.8 - 2026-09-13
+
+### 新增
+- 安装包本地镜像: 下载过的文件自动缓存到 ~/1b1t-mirror, 下次秒取
+  (mirror 子命令可预取指定版本的 vanilla/mod 安装包)
+- 镜像 HTTP 出口: openmcserver.cn/serverdown (bind mount + nginx),
+  其他机器从隧道下载, 本机直接文件复制
+- 下载自动切换源: 本地镜像 → serverdown 镜像 → 官方 → BMCLAPI
+- NeoForge/Forge 安装前自动复用本机已有依赖库 libraries/
+
 ## v1.0.7 - 2026-09-13
 
 ### 新增
