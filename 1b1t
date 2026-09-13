@@ -438,11 +438,10 @@ def pick_java(version, java_major=None):
     if need in javas:
         return javas[need][0]
     got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
-    print(c(f"\n[提示] {version} 需要 Java {need}, 本机只有: {got}", "yellow"))
-    if sys.stdin.isatty() and ask_bool(f"  自动安装 Java {need}?", True):
-        java = auto_install_java(need)
-        if java:
-            return java
+    print(c(f"[提示] {version} 需要 Java {need}, 本机只有: {got}", "yellow"))
+    java = auto_install_java(need)  # 自动安装, 不再询问
+    if java:
+        return java
     sys.exit(c(f"[错误] 缺少 Java {need}, 请手动安装: {java_install_hint(need)}", "red"))
 
 
@@ -1375,6 +1374,35 @@ def do_stop(server_dir):
     print(c("已停止", "green"))
 
 
+def do_kill(server_dir):
+    """强制杀死服务器进程(不保存, 仅 stop 卡死时用)"""
+    old = read_pid(server_dir)
+    if not old or not is_running(old["pid"]):
+        print(c("服务器未在运行", "yellow"))
+        return 0
+    print(c(f"强制杀死进程 PID {old['pid']} (不会保存世界!)", "red"))
+    try:
+        if IS_WIN:
+            import signal as _sig
+            os.kill(old["pid"], _sig.SIGTERM)
+        else:
+            os.kill(old["pid"], 9)
+    except OSError:
+        pass
+    keeper = old.get("keeper")
+    if keeper and is_running(keeper):
+        try:
+            import signal as _sig
+            os.kill(keeper, _sig.SIGTERM)
+        except OSError:
+            pass
+    try:
+        os.remove(os.path.join(runtime_dir(server_dir), "pid.json"))
+    except OSError:
+        pass
+    print(c("已杀死", "green"))
+
+
 def do_status(server_dir):
     old = read_pid(server_dir)
     cfg = load_cfg(server_dir)
@@ -1729,6 +1757,8 @@ def main_menu():
         print("  2. 启动服务器 (已有服务器)")
         print("  3. 删除服务器")
         print("  4. 查看状态")
+        print("  5. 软件设置")
+        print("  6. 强制杀死进程 (不保存世界)")
         print("  0. 退出")
         ans = ask("  选择", "1")
         if ans == "1":
@@ -1736,7 +1766,10 @@ def main_menu():
             return
         if ans == "0":
             sys.exit(0)
-        if ans not in ("2", "3", "4"):
+        if ans == "5":
+            do_settings()
+            continue
+        if ans not in ("2", "3", "4", "6"):
             print(c("  无效选择", "red"))
             continue
         if not servers:
@@ -1763,6 +1796,10 @@ def main_menu():
         if ans == "4":
             do_status(d)
             continue
+        if ans == "6":
+            if ask_bool(c(f"  确认强制杀死 {d}? 不会保存世界!", "red"), False):
+                do_kill(d)
+            continue
 
 
 def usage():
@@ -1776,6 +1813,7 @@ def usage():
   status <目录>      查看状态
   doctor <目录>      自主排查问题(开服失败时也会自动运行)
   console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
+  kill <目录>          强制杀死服务器进程(不保存世界, stop 卡死时用)
   config <目录>        修改服务器设置(编辑 server.properties 全部项)
   settings             软件设置(默认配置/镜像目录/镜像HTTP地址)
   mirror [版本...]     预取安装包到本地镜像 ~/1b1t-mirror (之后开服不走网络)
@@ -1795,7 +1833,8 @@ def main():
     advanced = "--advanced" in args
     args = [a for a in args if a not in ("--dry-run", "--advanced")]
     if args and args[0] in ("start", "stop", "restart", "status", "doctor",
-                            "console", "mirror", "config", "settings"):
+                            "console", "mirror", "config", "settings",
+                            "kill"):
         cmd = args.pop(0)
     if cmd == "mirror":
         return do_mirror(args)
@@ -1832,6 +1871,8 @@ def main():
         do_doctor(server_dir)
     elif cmd == "config":
         do_config(server_dir)
+    elif cmd == "kill":
+        do_kill(server_dir)
     return 0
 
 
