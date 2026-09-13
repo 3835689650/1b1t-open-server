@@ -35,6 +35,34 @@ Description: Minecraft 一键开服工具 (1b1t)
 EOF
 dpkg-deb --root-owner-group -b "$WORK/deb" "$WORK/1b1t-open-server_${VER}_all.deb"
 
+# Windows / macOS 版 (脚本 + 启动器)
+mkdir -p "$WORK/win/1b1t-open-server" "$WORK/mac"
+cp "$ROOT/1b1t" "$WORK/win/1b1t-open-server/1b1t.py"
+cp "$ROOT/1b1t" "$WORK/mac/1b1t"
+chmod +x "$WORK/mac/1b1t"
+cat > "$WORK/win/1b1t-open-server/启动服务器.bat" <<'EOF'
+@echo off
+chcp 65001 >nul
+python 1b1t.py %*
+if errorlevel 1 pause
+EOF
+cat > "$WORK/win/1b1t-open-server/安装说明.txt" <<'EOF'
+1b1t-open-server Windows 版
+
+1. 安装 Python 3.8+: https://www.python.org/downloads/
+   (安装时勾选 "Add Python to PATH")
+2. 双击 "启动服务器.bat" 开始使用
+3. 完整说明: https://www.1b1t.cn/
+EOF
+(cd "$WORK/win" && zip -qr "$WORK/1b1t-open-server_${VER}_windows.zip" 1b1t-open-server)
+(cd "$WORK/mac" && tar czf "$WORK/1b1t-open-server_${VER}_macos.tar.gz" 1b1t)
+
+# 三平台包汇总到 download/ 目录
+mkdir -p "$ROOT/download"
+cp "$WORK/1b1t-open-server_${VER}_windows.zip" "$ROOT/download/"
+cp "$WORK/1b1t-open-server_${VER}_macos.tar.gz" "$ROOT/download/"
+cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/download/"
+
 echo "==> 2/5 生成 APT 仓库索引 (保留所有历史版本 deb)"
 rm -rf "$ROOT/apt/dists"   # 索引重建, pool 里的历史版本 deb 全部保留
 mkdir -p "$ROOT/apt/pool/main/1b1t-open-server" \
@@ -81,10 +109,11 @@ api_put() { # 本地文件 仓库路径 分支
             -f branch="$3" -f content="$b64" --jq '.commit.sha' >/dev/null
     fi
 }
-# main 分支全量文件 (脚本/文档/apt 目录)
+# main 分支全量文件 (脚本/文档/apt 目录/三平台包)
 MAIN_FILES=()
 for f in 1b1t README.md LICENSE CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg \
-         $(cd apt && find . -type f | sed 's|^\./||'); do
+         $(cd apt && find . -type f | sed 's|^\./||') \
+         $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
 done
 if git add -A && git commit -m "release $VER" --quiet 2>/dev/null \
@@ -154,13 +183,14 @@ else
     echo "  未找到官网源码, 跳过 ($SITE_SRC)"
 fi
 
-echo "==> 6/6 同步 apt 仓库 + 镜像面板到官网"
+echo "==> 6/6 同步 apt 仓库 + 三平台包 + 镜像面板到官网"
 if [ -d "$(dirname "$APT_DST")" ]; then
-    sudo mkdir -p "$APT_DST" "$(dirname "$APT_DST")/mirror"
+    sudo mkdir -p "$APT_DST" "$(dirname "$APT_DST")/mirror" "$(dirname "$APT_DST")/download"
     sudo cp -r "$ROOT"/apt/. "$APT_DST"/
     [ -f "$MIRROR_PANEL_SRC" ] && sudo cp "$MIRROR_PANEL_SRC" "$(dirname "$APT_DST")/mirror/"
-    sudo chown -R www:www "$APT_DST" "$(dirname "$APT_DST")/mirror"
-    echo "  已同步: https://www.1b1t.cn/1b1t-apt/"
+    sudo cp "$ROOT"/download/* "$(dirname "$APT_DST")/download/"
+    sudo chown -R www:www "$APT_DST" "$(dirname "$APT_DST")/mirror" "$(dirname "$APT_DST")/download"
+    echo "  已同步: https://www.1b1t.cn/1b1t-apt/ + /download/ (win/mac/linux)"
 else
     echo "  未找到站点目录, 跳过"
 fi
