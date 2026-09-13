@@ -466,7 +466,7 @@ def _mirror_path(url):
     return os.path.join(MIRROR_DIR, p.netloc, p.path.lstrip("/"))
 
 
-def _fetch_one(url, dest, expect_sha1=None, expect_size=None):
+def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False):
     """单个 URL 下载, 显示进度, 支持续传, 失败返回 False"""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     headers = {"User-Agent": APP}
@@ -484,24 +484,30 @@ def _fetch_one(url, dest, expect_sha1=None, expect_size=None):
                     if not chunk:
                         break
                     f.write(chunk)
-                    done = f.tell()
-                    pct = done * 100 // total if total else 0
-                    print(f"\r  下载中 {done>>20}MB"
-                          + (f"/{total>>20}MB {pct}%" if total else ""),
-                          end="", flush=True)
-            print()
+                    if not quiet:
+                        done = f.tell()
+                        pct = done * 100 // total if total else 0
+                        print(f"\r  下载中 {done>>20}MB"
+                              + (f"/{total>>20}MB {pct}%" if total else ""),
+                              end="", flush=True)
+            if not quiet:
+                print()
     except urllib.error.HTTPError as e:
         if e.code == 416 and have:
             # Range 起点超出文件末尾 = 文件已下载完整
-            print(c("  文件已完整, 跳过下载", "green"))
+            if not quiet:
+                print(c("  文件已完整, 跳过下载", "green"))
             return True
-        print(c(f"  下载失败({e.code}): {url}", "red"))
+        if not quiet:
+            print(c(f"  下载失败({e.code}): {url}", "red"))
         return False
     except Exception as e:
-        print(c(f"  下载失败({e}): {url}", "red"))
+        if not quiet:
+            print(c(f"  下载失败({e}): {url}", "red"))
         return False
     if expect_sha1 and _sha1(dest) != expect_sha1:
-        print(c("  SHA1 校验失败, 文件可能损坏", "red"))
+        if not quiet:
+            print(c("  SHA1 校验失败, 文件可能损坏", "red"))
         return False
     return True
 
@@ -524,10 +530,11 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
     # 2. 网络下载: 自动切换源
     # 本机文件镜像与 serverdown 是同一份数据(bind mount), 文件未命中则 serverdown 也没有,
     # 直接走官方源; 其他机器(无本机镜像目录)先试 serverdown 隧道镜像
+    # 注意 serverdown 路径必须含域名段(与镜像物理结构一致), 否则永远 404
     if os.path.isdir(MIRROR_DIR):
         net_urls = list(urls)
     else:
-        net_urls = [MIRROR_HTTP + urllib.parse.urlparse(u).path.lstrip("/")
+        net_urls = [MIRROR_HTTP + os.path.relpath(_mirror_path(u), MIRROR_DIR)
                     for u in urls] + list(urls)
     for u in net_urls:
         if _fetch_one(u, dest, expect_sha1, expect_size):
@@ -899,6 +906,7 @@ def attach_console(server_dir):
                 sys.stdout.flush()
                 pos[lg] = size
 
+    sent_stop = False
     try:
         while True:
             flush_logs()
@@ -911,8 +919,18 @@ def attach_console(server_dir):
                     continue
                 if line.lower() in ("exit", "quit"):
                     break
+                if line.lower() == "stop":
+                    # 关服: 发送后立即退出回 shell, 服务器在后台保存世界
+                    if send_console(server_dir, line):
+                        sent_stop = True
+                        print(c("已发送关服命令, 服务器在后台保存退出, 回 shell...",
+                                "yellow"))
+                        break
+                    print(c("命令发送失败(控制台通道不可用), 请用: "
+                            f"1b1t stop {server_dir}", "red"))
+                    continue
                 send_console(server_dir, line)
-            # 服务器停了(如在控制台输了 stop) → 刷完剩余日志自动退出并清理 pid
+            # 服务器停了 → 刷完剩余日志自动退出并清理 pid
             info = read_pid(server_dir)
             if not info or not is_running(info["pid"]):
                 flush_logs()
@@ -926,8 +944,10 @@ def attach_console(server_dir):
         print()
         print(c("已退出控制台(服务器仍在运行)", "yellow"))
         return
-    if read_pid(server_dir) and is_running(read_pid(server_dir)["pid"]):
-        print(c("已退出控制台(服务器仍在运行)", "yellow"))
+    if not sent_stop:
+        info = read_pid(server_dir)
+        if info and is_running(info["pid"]):
+            print(c("已退出控制台(服务器仍在运行)", "yellow"))
 
 
 def wait_ready(server_dir, timeout=180):
@@ -1469,64 +1489,95 @@ def wizard(server_dir):
 
 # ---------- 入口 ----------
 
-def do_mirror(versions):
-    """预取安装包到本地镜像目录 ~/1b1t-mirror (之后开服不走网络)"""
-    print(c(f"镜像目录: {MIRROR_DIR}", "cyan"))
-    if not versions:
-        releases = [v["id"] for v in load_manifest() if v["type"] == "release"]
-        versions = releases[:3]
-    print(f"  预取版本: {', '.join(versions)}")
-    tmp = os.path.join(MIRROR_DIR, ".tmp")
-    os.makedirs(tmp, exist_ok=True)
+def _mirror_download(job):
+    """并发下载任务: (描述, [urls], 镜像目标路径) → 结果描述或 None"""
+    desc, urls, mp = job
+    if os.path.exists(mp) and os.path.getsize(mp) > 0:
+        return None  # 已缓存
+    os.makedirs(os.path.dirname(mp), exist_ok=True)
+    tmp = mp + ".part"
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    for u in urls:
+        if _fetch_one(u, tmp, quiet=True):
+            os.replace(tmp, mp)
+            return desc
     try:
-        for mc in versions:
-            print(f"\n== {c(mc, 'bold')} ==")
-            # vanilla 服务端
-            get_server_jar(mc, os.path.join(tmp, f"server-{mc}.jar"))
-            # NeoForge 安装器
-            try:
-                meta = http_get(NEOFORGE_META, 60)
-                versions_l = re.findall(r"<version>([^<]+)</version>", meta)
-                ver_key = mc[2:] if mc.startswith("1.") else mc
-                cands = [v for v in versions_l
-                         if re.match(rf"^{re.escape(ver_key)}\.\d+$", v)
-                         and not re.search(r"beta|alpha|rc", v, re.I)]
-                if cands:
-                    v = cands[-1]
-                    path = f"net/neoforged/neoforge/{v}/neoforge-{v}-installer.jar"
-                    fetch([f"https://maven.neoforged.net/releases/{path}",
-                           f"https://bmclapi2.bangbang93.com/maven/{path}"],
-                          os.path.join(tmp, f"neoforge-{v}-installer.jar"))
-            except Exception as e:
-                print(c(f"  neoforge 跳过: {e}", "yellow"))
-            # Forge 安装器
-            try:
-                meta = http_get(FORGE_META, 60)
-                versions_l = re.findall(r"<version>([^<]+)</version>", meta)
-                cands = [v for v in versions_l
-                         if v.startswith(mc + "-")
-                         and not re.search(r"beta|alpha|rc", v, re.I)]
-                if cands:
-                    v = cands[-1]
-                    path = f"net/minecraftforge/forge/{v}/forge-{v}-installer.jar"
-                    fetch([f"https://maven.minecraftforge.net/{path}",
-                           f"https://bmclapi2.bangbang93.com/maven/{path}"],
-                          os.path.join(tmp, f"forge-{v}-installer.jar"))
-            except Exception as e:
-                print(c(f"  forge 跳过: {e}", "yellow"))
-            # Fabric 安装器
-            try:
-                meta = http_get("https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml", 60)
-                iv = re.search(r"<release>([^<]+)</release>", meta).group(1)
-                path = f"net/fabricmc/fabric-installer/{iv}/fabric-installer-{iv}.jar"
-                fetch([f"https://maven.fabricmc.net/{path}",
-                       f"https://bmclapi2.bangbang93.com/maven/{path}"],
-                      os.path.join(tmp, f"fabric-installer-{iv}.jar"))
-            except Exception as e:
-                print(c(f"  fabric 跳过: {e}", "yellow"))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    print(c(f"\n完成! 之后开这些版本会直接从本地镜像复制, 不走网络", "green"))
+        os.remove(tmp)
+    except OSError:
+        pass
+    return f"失败: {desc}"
+
+
+def do_mirror(versions):
+    """预取安装包到镜像目录 (serverdown 直接可见)
+    无参数 = 全部正式版 vanilla + 全部 NeoForge/Forge 安装器 + Fabric 安装器"""
+    from concurrent.futures import ThreadPoolExecutor
+    print(c(f"镜像目录: {MIRROR_DIR}", "cyan"))
+    releases = [v["id"] for v in load_manifest(force=True)
+                if v["type"] == "release"]
+    if versions:
+        releases = versions
+        print(f"  预取版本: {', '.join(releases)}")
+    else:
+        print(f"  全量预取: {len(releases)} 个正式版 + 全部 mod 安装器")
+    jobs = []
+    # 1. vanilla 服务端 (BMCLAPI 镜像路径)
+    for mc in releases:
+        u = BMCL_SERVER_JAR.format(vid=mc)
+        jobs.append((f"vanilla {mc}", [u], _mirror_path(u)))
+    # 2. mod 安装器
+    for stype, meta_url, mvn, group in (
+            ("neoforge", NEOFORGE_META, "https://maven.neoforged.net/releases",
+             "net/neoforged/neoforge"),
+            ("forge", FORGE_META, "https://maven.minecraftforge.net",
+             "net/minecraftforge/forge")):
+        try:
+            meta = http_get(meta_url, 60)
+            vers = [v for v in re.findall(r"<version>([^<]+)</version>", meta)
+                    if not re.search(r"beta|alpha|rc", v, re.I)]
+        except Exception as e:
+            print(c(f"  {stype} 版本列表获取失败: {e}", "yellow"))
+            continue
+        if versions:  # 指定版本时只取该 MC 版本对应的安装器
+            if stype == "neoforge":
+                keys = [v[2:] for v in versions if v.startswith("1.")]
+                vers = [v for v in vers
+                        if any(re.match(rf"^{re.escape(k)}\.\d+$", v) for k in keys)]
+            else:
+                vers = [v for v in vers
+                        if any(v.startswith(mc + "-") for mc in versions)]
+        for v in vers:
+            path = f"{group}/{v}/{stype}-{v}-installer.jar"
+            u = f"{mvn}/{path}"
+            jobs.append((f"{stype} {v}", [u, f"https://bmclapi2.bangbang93.com/maven/{path}"],
+                         _mirror_path(u)))
+    # 3. Fabric 安装器 (最新一个即可, 支持任意 loader 版本)
+    try:
+        meta = http_get("https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml", 60)
+        iv = re.search(r"<release>([^<]+)</release>", meta).group(1)
+        path = f"net/fabricmc/fabric-installer/{iv}/fabric-installer-{iv}.jar"
+        u = f"https://maven.fabricmc.net/{path}"
+        jobs.append(("fabric-installer " + iv, [u, f"https://bmclapi2.bangbang93.com/maven/{path}"],
+                     _mirror_path(u)))
+    except Exception as e:
+        print(c(f"  fabric 列表获取失败: {e}", "yellow"))
+
+    print(f"  共 {len(jobs)} 个文件, 8 线程并发下载...")
+    done = 0
+    failed = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(_mirror_download, jobs):
+            done += 1
+            if r:
+                failed.append(r)
+            if done % 10 == 0 or done == len(jobs):
+                print(f"\r  进度: {done}/{len(jobs)}", end="", flush=True)
+    print()
+    if failed:
+        print(c(f"  失败 {len(failed)} 个: {', '.join(failed[:8])}{'...' if len(failed) > 8 else ''}",
+                "red"))
+    print(c(f"\n完成! 镜像已在 serverdown 可见: {MIRROR_HTTP}", "green"))
 
 
 def find_servers():
