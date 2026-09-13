@@ -47,11 +47,12 @@ cd "$ROOT/apt/dists/stable"
     echo "Architectures: all"
     echo "Components: main"
     echo "Date: $(date -R -u)"
+    echo "Valid-Until: $(date -R -u -d '+1 year')"
     echo "SHA256:"
     sha256sum main/binary-all/Packages main/binary-all/Packages.gz \
         | sed 's|\./||; s|^| |; s|  | |'
 } > Release
-gpg --batch --yes --digest-algo SHA256 \
+gpg --batch --yes --digest-algo SHA512 --personal-digest-preferences SHA512 \
     --clearsign -o InRelease Release
 cd "$ROOT"
 
