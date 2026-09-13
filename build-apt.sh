@@ -34,8 +34,8 @@ Description: Minecraft 一键开服工具 (1b1t)
 EOF
 dpkg-deb --root-owner-group -b "$WORK/deb" "$WORK/1b1t-open-server_${VER}_all.deb"
 
-echo "==> 2/5 生成 APT 仓库索引"
-rm -rf "$ROOT/apt"
+echo "==> 2/5 生成 APT 仓库索引 (保留所有历史版本 deb)"
+rm -rf "$ROOT/apt/dists"   # 索引重建, pool 里的历史版本 deb 全部保留
 mkdir -p "$ROOT/apt/pool/main/1b1t-open-server" \
          "$ROOT/apt/dists/stable/main/binary-all"
 cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/apt/pool/main/1b1t-open-server/"
