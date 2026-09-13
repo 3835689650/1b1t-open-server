@@ -124,10 +124,13 @@ root, site = sys.argv[1], sys.argv[2]
 cl = open(root + "/CHANGELOG.md").read()
 entries = re.findall(r"^## (v[\d.]+) - (\d{4}-\d{2}-\d{2})\n(.*?)(?=^## |\Z)", cl, re.S | re.M)
 def render(ver, date, body):
-    html = [f'<div class="rel"><b>{ver}</b> · {date}</div>']
+    # 每个版本一个可展开的卡片, 点击查看详细变更
+    html = ['<details class="ver-card">',
+            f'<summary><b>{ver}</b><span class="vdate">{date}</span></summary>']
     for m in re.finditer(r"^### (\S+)\n((?:- .*\n?)+)", body, re.M):
         items = "".join(f"<li>{i[2:]}</li>" for i in m.group(2).strip().splitlines())
         html.append(f'<div class="tag">{m.group(1)}</div><ul>{items}</ul>')
+    html.append('</details>')
     return "\n".join(html)
 rendered = "\n".join(render(*e) for e in entries)
 page = open(site).read()
