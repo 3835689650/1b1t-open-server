@@ -645,10 +645,14 @@ def attach_console(server_dir):
                 if line.lower() in ("exit", "quit"):
                     break
                 send_console(server_dir, line)
-            # 服务器停了(如在控制台输了 stop) → 刷完剩余日志自动退出
+            # 服务器停了(如在控制台输了 stop) → 刷完剩余日志自动退出并清理 pid
             info = read_pid(server_dir)
             if not info or not is_running(info["pid"]):
                 flush_logs()
+                try:
+                    os.remove(os.path.join(runtime_dir(server_dir), "pid.json"))
+                except OSError:
+                    pass
                 print(c("服务器已停止, 退出控制台", "yellow"))
                 break
     except KeyboardInterrupt:
