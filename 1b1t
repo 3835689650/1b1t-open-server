@@ -510,6 +510,8 @@ def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False):
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=60) as r:
+            if not quiet:
+                print(c(f"  下载源: {url}", "dim"))
             total = int(r.headers.get("Content-Length", 0)) + have
             mode = "ab" if have else "wb"
             with open(dest, mode) as f:
@@ -1572,12 +1574,24 @@ def _mirror_download(job):
         return None  # 已缓存
     os.makedirs(os.path.dirname(mp), exist_ok=True)
     tmp = mp + ".part"
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    for u in urls:
-        if _fetch_one(u, tmp, quiet=True):
-            os.replace(tmp, mp)
-            return desc
+    for attempt in range(3):  # 限流/抖动时重试
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        for u in urls:
+            if _fetch_one(u, tmp, quiet=True):
+                os.replace(tmp, mp)
+                return desc
+        # 404 = 源上不存在(旧版本已被清理), 重试无意义, 直接放弃
+        try:
+            req = urllib.request.Request(urls[0], method="HEAD",
+                                         headers={"User-Agent": APP})
+            urllib.request.urlopen(req, timeout=20)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                break
+        except Exception:
+            pass
+        time.sleep(5)
     try:
         os.remove(tmp)
     except OSError:
@@ -1598,10 +1612,17 @@ def do_mirror(versions):
     else:
         print(f"  全量预取: {len(releases)} 个正式版 + 全部 mod 安装器")
     jobs = []
-    # 1. vanilla 服务端 (BMCLAPI 镜像路径)
+    # 1. vanilla 服务端 (BMCLAPI 优先, 官方 piston 回退)
     for mc in releases:
         u = BMCL_SERVER_JAR.format(vid=mc)
-        jobs.append((f"vanilla {mc}", [u], _mirror_path(u)))
+        urls = [u]
+        try:
+            off = get_version_info(mc).get("downloads", {}).get("server", {}).get("url")
+            if off:
+                urls.append(off)
+        except Exception:
+            pass
+        jobs.append((f"vanilla {mc}", urls, _mirror_path(u)))
     # 2. mod 安装器
     for stype, meta_url, mvn, group in (
             ("neoforge", NEOFORGE_META, "https://maven.neoforged.net/releases",
@@ -1639,10 +1660,10 @@ def do_mirror(versions):
     except Exception as e:
         print(c(f"  fabric 列表获取失败: {e}", "yellow"))
 
-    print(f"  共 {len(jobs)} 个文件, 8 线程并发下载...")
+    print(f"  共 {len(jobs)} 个文件, 3 线程并发下载...")
     done = 0
     failed = []
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         for r in ex.map(_mirror_download, jobs):
             done += 1
             if r:
