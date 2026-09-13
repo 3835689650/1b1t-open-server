@@ -19,7 +19,13 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+
+# 本地安装包镜像目录 (下载过的文件缓存到这里, 下次直接从本地取)
+MIRROR_DIR = os.path.expanduser("~/1b1t-mirror")
+# 镜像的 HTTP 出口 (openmcserver.cn/serverdown, 其他机器走隧道下载)
+MIRROR_HTTP = "https://openmcserver.cn/serverdown/"
 
 APP = "1b1t-open-server"
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
@@ -43,7 +49,7 @@ try:  # Linux/macOS: poll 管道写端, java 退出(读端关闭)时 POLLERR 触
 except (AttributeError, OSError):
     poller = None
 while True:
-    r, _, _ = select.select([srv], [], [], 1)
+    r, _, _ = select.select([srv], [], [], 0.2)
     if poller is not None:
         for _fd, ev in poller.poll(0):
             if ev & (select.POLLERR | select.POLLHUP):
@@ -445,8 +451,23 @@ def advanced_editor(props):
 
 # ---------- 下载 ----------
 
-def fetch(url, dest, expect_sha1=None, expect_size=None):
-    """下载文件, 显示进度, 支持续传, 失败返回 None"""
+def _sha1(path):
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _mirror_path(url):
+    """URL → 本地镜像文件路径 (域名/路径 结构)"""
+    p = urllib.parse.urlparse(url)
+    return os.path.join(MIRROR_DIR, p.netloc, p.path.lstrip("/"))
+
+
+def _fetch_one(url, dest, expect_sha1=None, expect_size=None):
+    """单个 URL 下载, 显示进度, 支持续传, 失败返回 False"""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     headers = {"User-Agent": APP}
     have = os.path.getsize(dest) if os.path.exists(dest) else 0
@@ -474,24 +495,265 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
             # Range 起点超出文件末尾 = 文件已下载完整
             print(c("  文件已完整, 跳过下载", "green"))
             return True
-        print(c(f"  下载失败: {e}", "red"))
+        print(c(f"  下载失败({e.code}): {url}", "red"))
         return False
     except Exception as e:
-        print(c(f"  下载失败: {e}", "red"))
+        print(c(f"  下载失败({e}): {url}", "red"))
         return False
-    if expect_sha1:
-        import hashlib
-        h = hashlib.sha1()
-        with open(dest, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                h.update(chunk)
-        if h.hexdigest() != expect_sha1:
-            print(c("  SHA1 校验失败, 文件可能损坏", "red"))
-            return False
+    if expect_sha1 and _sha1(dest) != expect_sha1:
+        print(c("  SHA1 校验失败, 文件可能损坏", "red"))
+        return False
     return True
 
 
+def fetch(url, dest, expect_sha1=None, expect_size=None):
+    """下载文件: 本地镜像优先 → 多源依次尝试 → 成功后缓存到镜像"""
+    urls = url if isinstance(url, (list, tuple)) else [url]
+    # 1. 本地镜像命中直接复制
+    for u in urls:
+        mp = _mirror_path(u)
+        if os.path.exists(mp) and os.path.getsize(mp) > 0:
+            if expect_size and os.path.getsize(mp) != expect_size:
+                continue
+            if expect_sha1 and _sha1(mp) != expect_sha1:
+                continue
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copy2(mp, dest)
+            print(c(f"  本地镜像命中: {os.path.basename(dest)}", "green"))
+            return True
+    # 2. 网络下载: serverdown 镜像优先, 再依次尝试官方源 (自动切换)
+    net_urls = [MIRROR_HTTP + urllib.parse.urlparse(u).path.lstrip("/")
+                for u in urls] + list(urls)
+    for u in net_urls:
+        if _fetch_one(u, dest, expect_sha1, expect_size):
+            # 3. 缓存到本地镜像, 下次秒取
+            try:
+                os.makedirs(os.path.dirname(_mirror_path(u)), exist_ok=True)
+                shutil.copy2(dest, _mirror_path(u))
+                print(c("  已缓存到本地镜像", "cyan"))
+            except OSError:
+                pass
+            return True
+    return False
+
+
+# mod 服务器: Fabric/NeoForge/Forge 元数据源
+FABRIC_META = "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/{mc}"
+NEOFORGE_META = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+FORGE_META = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
+
 _VERSION_INFO_CACHE = {}
+
+
+def http_get(url, timeout=30, retries=3):
+    """GET 返回文本, 失败自动重试"""
+    last = None
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": APP})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read().decode()
+        except Exception as e:
+            last = e
+            time.sleep(1 + i)
+    raise last
+
+
+def http_json(url, timeout=30):
+    return json.loads(http_get(url, timeout))
+
+
+def pick_server_type():
+    """选择服务器类型: Vanilla/Fabric/NeoForge/Forge"""
+    print(c("  服务器类型:", "cyan"))
+    print_table([
+        ("编号", "类型", "说明"),
+        ("1", "Vanilla", "原版纯净, 无 mod"),
+        ("2", "Fabric", "轻量 mod 平台, 版本覆盖最广"),
+        ("3", "NeoForge", "1.20.1+ 主流 mod 平台"),
+        ("4", "Forge", "老牌 mod 平台, 1.20.1 及以下最成熟"),
+    ])
+    ans = ask("  选择", "1")
+    return {"1": "vanilla", "2": "fabric", "3": "neoforge", "4": "forge"}.get(ans, "vanilla")
+
+
+def pick_mod_version(mc_ver, stype):
+    """列出该 MC 版本可用的 mod 加载器版本 (最新在前), 数字选择或直接输入"""
+    print(c(f"  可用 {stype} 版本 (最新在前, 也可直接输入版本号):", "cyan"))
+    try:
+        if stype == "fabric":
+            loaders = http_json(FABRIC_META.format(mc=mc_ver))
+            vers = [x["loader"]["version"] for x in loaders
+                    if x["loader"].get("stable")]
+        else:
+            meta_url = NEOFORGE_META if stype == "neoforge" else FORGE_META
+            meta = http_get(meta_url, 60)
+            versions = re.findall(r"<version>([^<]+)</version>", meta)
+            if stype == "neoforge":
+                # 版本号 = MC 版本去掉开头 "1." (21.1.249 → MC 1.21.1)
+                ver_key = mc_ver[2:] if mc_ver.startswith("1.") else mc_ver
+                vers = [v for v in versions
+                        if re.match(rf"^{re.escape(ver_key)}\.\d+$", v)
+                        and not re.search(r"beta|alpha|rc", v, re.I)]
+            else:  # Forge 带 MC 前缀: 1.21.1-52.1.16
+                vers = [v for v in versions
+                        if v.startswith(mc_ver + "-")
+                        and not re.search(r"beta|alpha|rc", v, re.I)]
+    except Exception as e:
+        print(c(f"  获取版本列表失败({e}), 将自动使用最新版", "yellow"))
+        return None
+    if not vers:
+        print(c(f"  {stype} 没有 {mc_ver} 的版本", "yellow"))
+        return None
+    vers.reverse()  # 最新在前
+    show = vers[:10]
+    for i, v in enumerate(show):
+        mark = c("(默认)", "green") if i == 0 else ""
+        print(f"    {i+1}. {v} {mark}")
+    while True:
+        ans = ask("  选择", "1")
+        if ans.isdigit() and 1 <= int(ans) <= len(show):
+            return show[int(ans) - 1]
+        if ans in vers:
+            return ans
+        print(c("  无效, 请输入序号或版本号", "red"))
+
+
+def get_fabric_server_jar(mc_ver, server_dir, java_bin, loader=None):
+    """Fabric: 官方安装器 server 模式, 生成 fabric-server-launch.jar + 依赖库"""
+    try:
+        loaders = http_json(FABRIC_META.format(mc=mc_ver))
+        meta = http_get("https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml", 60)
+    except Exception as e:
+        print(c(f"  获取 Fabric 信息失败: {e}", "red"))
+        return False
+    if not loaders:
+        print(c(f"  Fabric 没有 {mc_ver} 的 loader 版本", "yellow"))
+        return False
+    if not loader:
+        loader = next((x["loader"]["version"] for x in loaders
+                       if x["loader"].get("stable")), loaders[0]["loader"]["version"])
+    iv = re.search(r"<release>([^<]+)</release>", meta)
+    if not iv:
+        return False
+    iv = iv.group(1)
+    path = f"net/fabricmc/fabric-installer/{iv}/fabric-installer-{iv}.jar"
+    urls = [f"https://maven.fabricmc.net/{path}",
+            f"https://bmclapi2.bangbang93.com/maven/{path}"]
+    installer = os.path.join(server_dir, "fabric-installer.jar")
+    print(f"  下载 Fabric 安装器 {iv} (loader {loader})...")
+    if not fetch(urls, installer):
+        return False
+    print(f"  运行安装器 (server 模式, 下载依赖库, 稍等)...")
+    try:
+        subprocess.run([java_bin, "-jar", installer, "server",
+                        "-mcversion", mc_ver, "-loader", loader,
+                        "-downloadMinecraft", "-noprofile"],
+                       cwd=server_dir, check=True)
+    except subprocess.CalledProcessError as e:
+        print(c(f"  安装器失败: {e}", "red"))
+        return False
+    return True
+
+
+def get_mod_installer(mc_ver, stype, server_dir, java, mod_ver=None):
+    """NeoForge/Forge: 下载安装器并 --installServer, 返回 True/False"""
+    if stype == "neoforge":
+        meta_url, mvn = NEOFORGE_META, "https://maven.neoforged.net/releases"
+        group = "net/neoforged/neoforge"
+    else:
+        meta_url, mvn = FORGE_META, "https://maven.minecraftforge.net"
+        group = "net/minecraftforge/forge"
+    if not mod_ver:
+        try:
+            meta = http_get(meta_url, 60)
+            versions = re.findall(r"<version>([^<]+)</version>", meta)
+        except Exception as e:
+            print(c(f"  获取版本列表失败: {e}", "red"))
+            return False
+        # 匹配该 MC 版本的正式版, 排除 beta/alpha/rc
+        if stype == "neoforge":
+            # NeoForge 版本号 = MC 版本去掉开头 "1." (21.1.249 → MC 1.21.1)
+            ver_key = mc_ver[2:] if mc_ver.startswith("1.") else mc_ver
+            cands = [v for v in versions
+                     if re.match(rf"^{re.escape(ver_key)}\.\d+$", v)
+                     and not re.search(r"beta|alpha|rc", v, re.I)]
+        else:  # Forge: 1.21.1-52.1.16 带 MC 前缀
+            cands = [v for v in versions
+                     if v.startswith(mc_ver + "-")
+                     and not re.search(r"beta|alpha|rc", v, re.I)]
+        if not cands:
+            print(c(f"  {stype} 没有 {mc_ver} 的版本", "yellow"))
+            return False
+        mod_ver = cands[-1]  # 最新正式版
+    path = f"{group}/{mod_ver}/{stype}-{mod_ver}-installer.jar"
+    urls = [f"{mvn}/{path}",   # 官方仓库
+            f"https://bmclapi2.bangbang93.com/maven/{path}"]  # 国内镜像
+    installer = os.path.join(server_dir, f"{stype}-installer.jar")
+    print(f"  下载 {stype} {mod_ver} 安装器...")
+    if not fetch(urls, installer):
+        return False
+    print(f"  运行安装器 (--installServer, 需下载依赖库, 稍等)...")
+    try:
+        subprocess.run([java, "-jar", installer, "--installServer"],
+                       cwd=server_dir, check=True)
+    except subprocess.CalledProcessError as e:
+        print(c(f"  安装器失败: {e}", "red"))
+        return False
+    return True
+
+
+def reuse_libraries(server_dir):
+    """复用本机其他服务器目录已有的依赖库 libraries/ (加速安装, 不走网络)"""
+    target = os.path.join(server_dir, "libraries")
+    if os.path.isdir(target) and os.listdir(target):
+        return
+    home = os.path.expanduser("~")
+    try:
+        entries = os.listdir(home)
+    except OSError:
+        return
+    for entry in entries:
+        src = os.path.join(home, entry, "libraries")
+        if not os.path.isdir(src):
+            continue
+        if os.path.realpath(src) == os.path.realpath(target):
+            continue
+        if not os.listdir(src):
+            continue
+        print(c(f"  复用本机依赖库: {src} → 本地复制(不走网络)", "green"))
+        try:
+            shutil.copytree(src, target, dirs_exist_ok=True)
+        except OSError:
+            continue
+        return
+
+
+def start_mod_server(server_dir, cfg, ram):
+    """forge/neoforge: 改写内存参数, 用安装器生成的 run.sh/run.bat 启动"""
+    # user_jvm_args.txt 里替换内存参数
+    uj = os.path.join(server_dir, "user_jvm_args.txt")
+    if os.path.exists(uj):
+        with open(uj) as f:
+            lines = f.read().splitlines()
+        out = []
+        wrote = False
+        for ln in lines:
+            if ln.strip().startswith("-Xm"):
+                if not wrote:
+                    out.append(f"-Xms512M -Xmx{ram}")
+                    wrote = True
+                continue
+            out.append(ln)
+        if not wrote:
+            out.append(f"-Xms512M -Xmx{ram}")
+        with open(uj, "w") as f:
+            f.write("\n".join(out) + "\n")
+    if IS_WIN:
+        run = os.path.join(server_dir, "run.bat")
+        return ["cmd", "/c", "run.bat", "nogui"]
+    run = os.path.join(server_dir, "run.sh")
+    return ["bash", run, "nogui"]
 
 
 def get_version_info(version):
@@ -896,10 +1158,16 @@ def start_server(server_dir, cfg, wait=True):
         flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         flags["start_new_session"] = True
-    p = subprocess.Popen(
-        [java, "-Xms512M", f"-Xmx{ram}", "-jar", "server.jar", "nogui"],
-        stdin=subprocess.PIPE, stdout=console_log, stderr=subprocess.STDOUT,
-        cwd=server_dir, **flags)
+    stype = cfg.get("server_type", "vanilla")
+    if stype == "fabric":
+        cmd = [java, "-Xms512M", f"-Xmx{ram}", "-jar",
+               "fabric-server-launch.jar", "nogui"]
+    elif stype in ("neoforge", "forge"):
+        cmd = start_mod_server(server_dir, cfg, ram)
+    else:
+        cmd = [java, "-Xms512M", f"-Xmx{ram}", "-jar", "server.jar", "nogui"]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=console_log,
+                         stderr=subprocess.STDOUT, cwd=server_dir, **flags)
     console_log.close()
     # keeper: 持有 java stdin 写端 + 监听本地 TCP 转发控制台命令
     port = free_port()
@@ -955,12 +1223,27 @@ def do_start(server_dir, dry_run=False):
         return
 
     # 先确认 Java 匹配, 再下载
-    pick_java(cfg["version"], cfg.get("java"))
+    java_bin = pick_java(cfg["version"], cfg.get("java"))
 
-    # 下载核心
-    jar = os.path.join(server_dir, "server.jar")
-    if not get_server_jar(cfg["version"], jar, info):
-        sys.exit(c("[错误] 服务端下载失败", "red"))
+    # 按类型准备服务端
+    stype = cfg.get("server_type", "vanilla")
+    if stype == "fabric":
+        jar = os.path.join(server_dir, "fabric-server-launch.jar")
+        if not os.path.exists(jar) or os.path.getsize(jar) < 1000:
+            if not get_fabric_server_jar(cfg["version"], server_dir, java_bin,
+                                         cfg.get("mod_version")):
+                sys.exit(c("[错误] Fabric 安装失败", "red"))
+    elif stype in ("neoforge", "forge"):
+        if not os.path.exists(os.path.join(server_dir, "run.sh")) and \
+           not os.path.exists(os.path.join(server_dir, "run.bat")):
+            reuse_libraries(server_dir)  # 复用本机已有依赖库, 加速安装
+            if not get_mod_installer(cfg["version"], stype, server_dir,
+                                     java_bin, cfg.get("mod_version")):
+                sys.exit(c(f"[错误] {stype} 安装失败", "red"))
+    else:
+        jar = os.path.join(server_dir, "server.jar")
+        if not get_server_jar(cfg["version"], jar, info):
+            sys.exit(c("[错误] 服务端下载失败", "red"))
 
     print(c(f"\n正在启动: MC {cfg['version']} 端口 {cfg['port']} "
             f"内存 {cfg.get('ram','2G')}", "bold"))
@@ -1105,6 +1388,10 @@ def wizard(server_dir):
     print(c(BANNER, "cyan"))
 
     ver = pick_version()["id"]
+    stype = pick_server_type()
+    mod_version = None
+    if stype != "vanilla":
+        mod_version = pick_mod_version(ver, stype)
 
     if server_dir is None:
         step(2, "选择服务器位置")
@@ -1150,14 +1437,16 @@ def wizard(server_dir):
         ram = pick_ram()
         advanced_editor(props)
 
-    cfg = {"dir": server_dir, "version": ver, "port": int(port), "ram": ram,
+    cfg = {"dir": server_dir, "version": ver, "server_type": stype,
+           "mod_version": mod_version, "port": int(port), "ram": ram,
            "props": props, "gamerules": {}}
     if keep:
         cfg["gamerules"]["keepInventory"] = "true"
 
     step(5, "确认")
-    print(f"  MC 版本: {c(ver, 'green')}    端口: {c(port, 'green')}    "
-          f"内存: {c(ram, 'green')}")
+    type_desc = stype + (f" {mod_version}" if mod_version else "")
+    print(f"  类型: {c(type_desc, 'green')}    MC 版本: {c(ver, 'green')}    "
+          f"端口: {c(port, 'green')}    内存: {c(ram, 'green')}")
     print(f"  目录: {c(server_dir, 'green')}")
     if not ask_bool("  确认开服?", True):
         sys.exit("已取消")
@@ -1165,6 +1454,66 @@ def wizard(server_dir):
 
 
 # ---------- 入口 ----------
+
+def do_mirror(versions):
+    """预取安装包到本地镜像目录 ~/1b1t-mirror (之后开服不走网络)"""
+    print(c(f"镜像目录: {MIRROR_DIR}", "cyan"))
+    if not versions:
+        releases = [v["id"] for v in load_manifest() if v["type"] == "release"]
+        versions = releases[:3]
+    print(f"  预取版本: {', '.join(versions)}")
+    tmp = os.path.join(MIRROR_DIR, ".tmp")
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        for mc in versions:
+            print(f"\n== {c(mc, 'bold')} ==")
+            # vanilla 服务端
+            get_server_jar(mc, os.path.join(tmp, f"server-{mc}.jar"))
+            # NeoForge 安装器
+            try:
+                meta = http_get(NEOFORGE_META, 60)
+                versions_l = re.findall(r"<version>([^<]+)</version>", meta)
+                ver_key = mc[2:] if mc.startswith("1.") else mc
+                cands = [v for v in versions_l
+                         if re.match(rf"^{re.escape(ver_key)}\.\d+$", v)
+                         and not re.search(r"beta|alpha|rc", v, re.I)]
+                if cands:
+                    v = cands[-1]
+                    path = f"net/neoforged/neoforge/{v}/neoforge-{v}-installer.jar"
+                    fetch([f"https://maven.neoforged.net/releases/{path}",
+                           f"https://bmclapi2.bangbang93.com/maven/{path}"],
+                          os.path.join(tmp, f"neoforge-{v}-installer.jar"))
+            except Exception as e:
+                print(c(f"  neoforge 跳过: {e}", "yellow"))
+            # Forge 安装器
+            try:
+                meta = http_get(FORGE_META, 60)
+                versions_l = re.findall(r"<version>([^<]+)</version>", meta)
+                cands = [v for v in versions_l
+                         if v.startswith(mc + "-")
+                         and not re.search(r"beta|alpha|rc", v, re.I)]
+                if cands:
+                    v = cands[-1]
+                    path = f"net/minecraftforge/forge/{v}/forge-{v}-installer.jar"
+                    fetch([f"https://maven.minecraftforge.net/{path}",
+                           f"https://bmclapi2.bangbang93.com/maven/{path}"],
+                          os.path.join(tmp, f"forge-{v}-installer.jar"))
+            except Exception as e:
+                print(c(f"  forge 跳过: {e}", "yellow"))
+            # Fabric 安装器
+            try:
+                meta = http_get("https://maven.fabricmc.net/net/fabricmc/fabric-installer/maven-metadata.xml", 60)
+                iv = re.search(r"<release>([^<]+)</release>", meta).group(1)
+                path = f"net/fabricmc/fabric-installer/{iv}/fabric-installer-{iv}.jar"
+                fetch([f"https://maven.fabricmc.net/{path}",
+                       f"https://bmclapi2.bangbang93.com/maven/{path}"],
+                      os.path.join(tmp, f"fabric-installer-{iv}.jar"))
+            except Exception as e:
+                print(c(f"  fabric 跳过: {e}", "yellow"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print(c(f"\n完成! 之后开这些版本会直接从本地镜像复制, 不走网络", "green"))
+
 
 def find_servers():
     """扫描 ~ 下含 .1b1t-open-server/config.json 的目录"""
@@ -1244,6 +1593,7 @@ def usage():
   status <目录>      查看状态
   doctor <目录>      自主排查问题(开服失败时也会自动运行)
   console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
+  mirror [版本...]     预取安装包到本地镜像 ~/1b1t-mirror (之后开服不走网络)
   其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)""")
 
 
@@ -1258,8 +1608,10 @@ def main():
     dry_run = "--dry-run" in args
     args = [a for a in args if a != "--dry-run"]
     if args and args[0] in ("start", "stop", "restart", "status", "doctor",
-                            "console"):
+                            "console", "mirror"):
         cmd = args.pop(0)
+    if cmd == "mirror":
+        return do_mirror(args)
     if args and not args[0].startswith("-"):
         server_dir = os.path.abspath(args.pop(0))
         if cmd == "console" and args:
