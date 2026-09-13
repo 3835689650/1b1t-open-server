@@ -113,11 +113,43 @@ cat > "$WORK/amd64/1b1t-open-server/安装说明.txt" <<'EOF'
 EOF
 (cd "$WORK/amd64" && tar czf "$WORK/1b1t-open-server_${VER}_amd64.tar.gz" 1b1t-open-server)
 
+# arm64 独立二进制 (qemu 交叉打包, 需要 /opt/arm64-root 环境)
+if [ -x /opt/arm64-root/bin/bash ]; then
+    sudo cp /usr/bin/qemu-aarch64-static /opt/arm64-root/usr/bin/ 2>/dev/null || true
+    sudo cp "$ROOT/1b1t" /opt/arm64-root/tmp/1b1t
+    sudo chroot /opt/arm64-root /bin/bash -c \
+        "cd /tmp && rm -rf dist build && python3 -m PyInstaller --onefile --name 1b1t 1b1t" \
+        >/dev/null 2>&1
+    mkdir -p "$WORK/arm64/1b1t-open-server"
+    sudo cp /opt/arm64-root/tmp/dist/1b1t "$WORK/arm64/1b1t-open-server/1b1t"
+    sudo chown "$(id -u):$(id -g)" "$WORK/arm64/1b1t-open-server/1b1t"
+    cat > "$WORK/arm64/1b1t-open-server/install.sh" <<'EOF'
+#!/bin/bash
+# 1b1t 一键安装 (arm64 独立版, 免 Python)
+set -e
+D=/usr/local/bin
+if [ ! -w "$D" ]; then sudo mkdir -p "$D"; sudo cp 1b1t "$D/1b1t"; sudo chmod +x "$D/1b1t"
+else cp 1b1t "$D/1b1t"; chmod +x "$D/1b1t"; fi
+echo "安装完成! 重新打开终端, 输入 1b1t 即可启动"
+EOF
+    chmod +x "$WORK/arm64/1b1t-open-server/install.sh"
+    cat > "$WORK/arm64/1b1t-open-server/安装说明.txt" <<'EOF'
+1b1t-open-server arm64 独立版 (免安装 Python)
+
+1. 解压后运行: ./install.sh 一键安装
+2. 重新打开终端, 输入 1b1t 即可启动
+3. 完整说明: https://www.1b1t.cn/
+EOF
+    (cd "$WORK/arm64" && tar czf "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" 1b1t-open-server)
+fi
+
 # 平台包汇总到 download/ 目录 (deb 为 all 架构, 支持 amd64/arm64)
 mkdir -p "$ROOT/download"
 cp "$WORK/1b1t-open-server_${VER}_windows.zip" "$ROOT/download/"
 cp "$WORK/1b1t-open-server_${VER}_macos.tar.gz" "$ROOT/download/"
 cp "$WORK/1b1t-open-server_${VER}_amd64.tar.gz" "$ROOT/download/"
+[ -f "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" ] \
+    && cp "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" "$ROOT/download/"
 cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/download/"
 
 echo "==> 2/5 生成 APT 仓库索引 (保留所有历史版本 deb)"

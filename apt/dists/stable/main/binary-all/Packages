@@ -5,9 +5,9 @@ Maintainer: 1b1t <3835689650@users.noreply.github.com>
 Depends: python3
 Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.19_all.deb
 Size: 21796
-MD5sum: afc702d2c0ea00d01f47e69417ca18d6
-SHA1: 5d5e0a7babca38d68460346b781c1d7353a11076
-SHA256: 308710d94d540b5c37a91301197a1c02473d0f52d84dd4eebad946354907cd89
+MD5sum: 3725c8562f79b05047916977218a14fb
+SHA1: 53cf9ef5f302078680385d4a0f4587f1d8c2d528
+SHA256: 252399ed15d82f9e50c68175cbed632d9a136444cdce3aa2928a025752804354
 Section: utils
 Priority: optional
 Homepage: https://www.1b1t.cn/
