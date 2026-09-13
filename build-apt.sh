@@ -8,6 +8,7 @@ VER="${1:-1.0.0}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SITE_SRC="${SITE_SRC:-$ROOT/../openmc-pan-build/1b1t/index.html}"
 SITE_DST="/www/wwwroot/www.1b1t.cn/index.html"
+DOCS_SRC="${DOCS_SRC:-$ROOT/../openmc-pan-build/1b1t/docs.html}"
 MIRROR_PANEL_SRC="${MIRROR_PANEL_SRC:-$ROOT/../openmc-pan-build/mirror/index.php}"
 APT_DST="/www/wwwroot/www.1b1t.cn/1b1t-apt"
 REPO="3835689650/1b1t-open-server"
@@ -145,7 +146,10 @@ open(site, "w").write(page)
 print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 {entries[0][0]}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
-    echo "  官网已部署: https://www.1b1t.cn/"
+    [ -f "$DOCS_SRC" ] && sudo mkdir -p "$(dirname "$SITE_DST")/docs" \
+        && sudo cp "$DOCS_SRC" "$(dirname "$SITE_DST")/docs/index.html" \
+        && sudo chown www:www "$(dirname "$SITE_DST")/docs/index.html"
+    echo "  官网已部署: https://www.1b1t.cn/ (含 /docs/ 教程)"
 else
     echo "  未找到官网源码, 跳过 ($SITE_SRC)"
 fi
