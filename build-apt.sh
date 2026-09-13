@@ -77,6 +77,6 @@ git -C "$WORK/pages" push -f origin gh-pages --quiet
 git worktree remove "$WORK/pages" --force
 
 echo "完成! 安装方法:"
-echo "  curl -fsSL https://github.com/3835689650/1b1t-open-server/raw/main/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
-echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://3835689650.github.io/1b1t-open-server/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
+echo "  curl -fsSL https://raw.githubusercontent.com/3835689650/1b1t-open-server/main/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
+echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://raw.githubusercontent.com/3835689650/1b1t-open-server/gh-pages/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
 echo "  sudo apt update && sudo apt install 1b1t-open-server"
