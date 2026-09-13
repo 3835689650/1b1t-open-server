@@ -2,6 +2,13 @@
 
 每个版本标注: 新增了什么 / 修复了什么。
 
+## v1.0.17 - 2026-09-13
+
+### 新增
+- 官网加手动开服技术文档: www.1b1t.cn/docs/
+  (Java 版本对照 / Vanilla·Fabric·NeoForge·Forge 手把手步骤 /
+   server.properties 配置表 / 关服备份 / 常见问题)
+
 ## v1.0.16 - 2026-09-13
 
 ### 新增
