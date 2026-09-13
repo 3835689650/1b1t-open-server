@@ -521,9 +521,14 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
             shutil.copy2(mp, dest)
             print(c(f"  本地镜像命中: {os.path.basename(dest)}", "green"))
             return True
-    # 2. 网络下载: serverdown 镜像优先, 再依次尝试官方源 (自动切换)
-    net_urls = [MIRROR_HTTP + urllib.parse.urlparse(u).path.lstrip("/")
-                for u in urls] + list(urls)
+    # 2. 网络下载: 自动切换源
+    # 本机文件镜像与 serverdown 是同一份数据(bind mount), 文件未命中则 serverdown 也没有,
+    # 直接走官方源; 其他机器(无本机镜像目录)先试 serverdown 隧道镜像
+    if os.path.isdir(MIRROR_DIR):
+        net_urls = list(urls)
+    else:
+        net_urls = [MIRROR_HTTP + urllib.parse.urlparse(u).path.lstrip("/")
+                    for u in urls] + list(urls)
     for u in net_urls:
         if _fetch_one(u, dest, expect_sha1, expect_size):
             # 3. 缓存到本地镜像, 下次秒取
