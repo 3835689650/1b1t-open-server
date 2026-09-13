@@ -2,6 +2,28 @@
 
 每个版本标注: 新增了什么 / 修复了什么。
 
+## v1.0.8 - 2026-09-13
+
+### 新增
+- 安装包本地镜像: 下载过的文件自动缓存到 ~/1b1t-mirror, 下次秒取
+  (mirror 子命令可预取指定版本的 vanilla/mod 安装包)
+- 镜像 HTTP 出口: openmcserver.cn/serverdown (bind mount + nginx),
+  其他机器从隧道下载, 本机直接文件复制
+- 下载自动切换源: 本地镜像 → serverdown 镜像 → 官方 → BMCLAPI
+- NeoForge/Forge 安装前自动复用本机已有依赖库 libraries/
+
+## v1.0.7 - 2026-09-13
+
+### 新增
+- mod 服务器支持: 向导可选 Vanilla / Fabric / NeoForge / Forge
+  (自动下载官方安装器并安装依赖库, 内存参数自动写入)
+- mod 加载器版本列表: 列出该 MC 版本的全部可用版本, 数字选择或直接输入
+  (如 NeoForge 21.1.250/249/248... Fabric 全部稳定 loader)
+
+### 修复
+- 控制台命令转发延迟: keeper 轮询 1s → 0.2s
+- 网络请求失败自动重试 3 次 (mod 仓库连接不稳定)
+
 ## v1.0.6 - 2026-09-13
 
 ### 修复
