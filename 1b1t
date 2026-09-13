@@ -438,10 +438,11 @@ def pick_java(version, java_major=None):
     if need in javas:
         return javas[need][0]
     got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
-    print(c(f"[提示] {version} 需要 Java {need}, 本机只有: {got}", "yellow"))
-    java = auto_install_java(need)  # 自动安装, 不再询问
-    if java:
-        return java
+    print(c(f"\n[提示] {version} 需要 Java {need}, 本机只有: {got}", "yellow"))
+    if sys.stdin.isatty() and ask_bool(f"  自动安装 Java {need}?", True):
+        java = auto_install_java(need)
+        if java:
+            return java
     sys.exit(c(f"[错误] 缺少 Java {need}, 请手动安装: {java_install_hint(need)}", "red"))
 
 
