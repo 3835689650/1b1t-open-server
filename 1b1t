@@ -592,21 +592,34 @@ def send_console(server_dir, line, timeout=10):
 
 
 def attach_console(server_dir):
-    """接入服务器控制台: 实时日志 + 命令直发, exit/Ctrl+C 退出(不关服)"""
-    log = os.path.join(server_dir, "logs", "latest.log")
-    pos = os.path.getsize(log) if os.path.exists(log) else 0
+    """接入服务器控制台: 全部启动日志 + 实时输出 + 命令直发, exit/Ctrl+C 退出"""
+    rt = runtime_dir(server_dir)
+    logs = [os.path.join(rt, "console.log"),        # 进程 stdout/stderr (即时)
+            os.path.join(server_dir, "logs", "latest.log")]  # log4j 完整日志
+    pos = {lg: 0 for lg in logs}
+    # 先把已有日志全部显示出来 (从本次启动开始)
+    for lg in logs:
+        if os.path.exists(lg):
+            with open(lg, errors="ignore") as f:
+                sys.stdout.write(f.read())
+            pos[lg] = os.path.getsize(lg)
+    sys.stdout.flush()
     print(c("已接入控制台: 直接输入命令执行, exit 或 Ctrl+C 退出(服务器继续运行)",
             "green"))
     try:
         while True:
-            if os.path.exists(log):
-                size = os.path.getsize(log)
-                if size > pos:
-                    with open(log, errors="ignore") as f:
-                        f.seek(pos)
+            for lg in logs:
+                if not os.path.exists(lg):
+                    continue
+                size = os.path.getsize(lg)
+                if size < pos[lg]:  # log4j 轮转后大小重置, 从头读
+                    pos[lg] = 0
+                if size > pos[lg]:
+                    with open(lg, errors="ignore") as f:
+                        f.seek(pos[lg])
                         sys.stdout.write(f.read())
                     sys.stdout.flush()
-                    pos = size
+                    pos[lg] = size
             if select.select([sys.stdin], [], [], 0.2)[0]:
                 line = sys.stdin.readline()
                 if not line:
@@ -847,7 +860,8 @@ def start_server(server_dir, cfg, wait=True):
 
     java = pick_java(cfg["version"], cfg.get("java"))
     ram = cfg.get("ram", "2G")
-    console_log = open(os.path.join(rt, "console.log"), "ab")
+    # wb: 每次启动清空, console.log 只含本次进程输出(attach 时从头全显示)
+    console_log = open(os.path.join(rt, "console.log"), "wb")
 
     flags = {}
     if IS_WIN:
