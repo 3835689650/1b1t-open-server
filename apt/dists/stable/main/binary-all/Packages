@@ -1,13 +1,13 @@
 Package: 1b1t-open-server
-Version: 1.0.19
+Version: 1.0.20
 Architecture: all
 Maintainer: 1b1t <3835689650@users.noreply.github.com>
 Depends: python3
-Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.19_all.deb
-Size: 21796
-MD5sum: 3725c8562f79b05047916977218a14fb
-SHA1: 53cf9ef5f302078680385d4a0f4587f1d8c2d528
-SHA256: 252399ed15d82f9e50c68175cbed632d9a136444cdce3aa2928a025752804354
+Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.20_all.deb
+Size: 22168
+MD5sum: 8dda2bc79a4567a091f50c04a46531e3
+SHA1: 14499bb6aaed2c47d1762ba91713b9cd811e36b1
+SHA256: 3f4455274ca1889e49eafc46ade792fbaa5388d0b4b7d83d28a5f0f681da5efd
 Section: utils
 Priority: optional
 Homepage: https://www.1b1t.cn/

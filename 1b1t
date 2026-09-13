@@ -69,6 +69,57 @@ BMCL_SERVER_JAR = "https://bmclapi2.bangbang93.com/version/{vid}/server"
 RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/console.log
 IS_WIN = (os.name == "nt")
 
+# stop 后后台收尾进程: 等服务器退出 → 必要时强杀进程组 → 杀 keeper → 删 pid.json
+# (attach 里输 stop 后工具立即退出, 收尾交给这个分离进程, 保证关得干净)
+CLEANUP_CODE = r"""
+import json, os, signal, sys, time
+server_dir = sys.argv[1]
+rt = os.path.join(server_dir, ".1b1t-open-server")
+
+def is_running(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def load_pid():
+    try:
+        with open(os.path.join(rt, "pid.json")) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+for _ in range(240):  # 最多等 4 分钟
+    info = load_pid()
+    if not info or not is_running(info["pid"]):
+        break
+    time.sleep(1)
+info = load_pid()
+if info and is_running(info["pid"]):  # 还没退, 强杀整个进程组
+    try:
+        os.killpg(info["pid"], 9)
+    except (OSError, AttributeError):
+        try:
+            os.kill(info["pid"], 9)
+        except OSError:
+            pass
+    time.sleep(2)
+if info:
+    keeper = info.get("keeper")
+    if keeper and is_running(keeper):
+        try:
+            os.kill(keeper, signal.SIGTERM)
+        except OSError:
+            pass
+try:
+    os.remove(os.path.join(rt, "pid.json"))
+except OSError:
+    pass
+"""
+
 # 控制台 keeper: 持有 java stdin 写端, 监听本地 TCP 转发命令 (Linux/Windows/macOS 通用)
 # 注意: fd0 是管道写端(O_WRONLY), sys.stdin 会初始化失败, 必须用 os.write(0, ...)
 KEEPER_CODE = r"""
@@ -968,9 +1019,14 @@ def attach_console(server_dir):
                 if line.lower() in ("exit", "quit"):
                     break
                 if line.lower() == "stop":
-                    # 关服: 发送后立即退出回 shell, 服务器在后台保存世界
+                    # 关服: 发送后立即退出回 shell, 后台收尾进程负责等退出+清理
                     if send_console(server_dir, line):
                         sent_stop = True
+                        flags = {"start_new_session": True} if not IS_WIN else {}
+                        subprocess.Popen(
+                            [sys.executable, "-c", CLEANUP_CODE, server_dir],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, **flags)
                         print(c("已发送关服命令, 服务器在后台保存退出, 回 shell...",
                                 "yellow"))
                         break
