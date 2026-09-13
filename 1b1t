@@ -1,0 +1,884 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+1b1t-open-server — Minecraft 一键开服工具
+
+向导流程: ①选择版本 ②选择目录 ③选择端口 ④常见配置(正版验证/命令方块/死亡不掉落等)
+          ⑤高级选项(编辑 server.properties 全部项) → 自动下载核心并开服
+子命令:   start [目录] | stop [目录] | restart [目录] | status [目录] | console <目录> <命令>
+"""
+
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+APP = "1b1t-open-server"
+CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
+MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
+BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}"
+BMCL_SERVER_JAR = "https://bmclapi2.bangbang93.com/version/{vid}/server"
+RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/fifo/console.log
+FIFO_NAME = "stdin.fifo"
+
+# 启动横幅 (figlet standard 字体)
+BANNER = r"""
+ _  _      _  _
+/ || |__  / || |_    ___   _ __    ___  _ __          ___   ___  _ __ __   __ ___  _ __
+| || '_ \ | || __|  / _ \ | '_ \  / _ \| '_ \  _____ / __| / _ \| '__|\ \ / // _ \| '__|
+| || |_) || || |_  | (_) || |_) ||  __/| | | ||_____|\__ \|  __/| |    \ V /|  __/| |
+|_||_.__/ |_| \__|  \___/ | .__/  \___||_| |_|       |___/ \___||_|     \_/  \___||_|
+                          |_|
+"""
+
+# 版本 → 所需 Java 主版本 (>= 指该版本起)
+JAVA_RULES = [
+    ((1, 0, 0), (1, 16, 5), 8),
+    ((1, 17, 0), (1, 17, 1), 16),
+    ((1, 18, 0), (1, 20, 4), 17),
+    ((1, 20, 5), (99, 0, 0), 21),
+]
+
+# 网络失败时的兜底版本列表
+FALLBACK_VERSIONS = ["1.8.8", "1.12.2", "1.14.4", "1.16.5", "1.17.1", "1.18.2",
+                     "1.19.4", "1.20.1", "1.20.4", "1.20.6", "1.21", "1.21.1", "1.21.4"]
+
+# server.properties 全部键: (key, 默认值, 中文说明)
+PROPS = [
+    ("server-port", "25565", "服务器端口"),
+    ("server-ip", "", "监听地址(空=全部)"),
+    ("motd", "1b1t Server", "服务器列表显示的名称"),
+    ("max-players", "20", "最大玩家数"),
+    ("online-mode", "true", "正版验证"),
+    ("white-list", "false", "白名单"),
+    ("enforce-whitelist", "false", "强制白名单(踢出不在名单的在线玩家)"),
+    ("pvp", "true", "玩家对战"),
+    ("difficulty", "normal", "难度 peaceful/easy/normal/hard"),
+    ("hardcore", "false", "极限模式"),
+    ("gamemode", "survival", "默认游戏模式"),
+    ("force-gamemode", "false", "强制默认游戏模式"),
+    ("allow-flight", "false", "允许飞行"),
+    ("allow-nether", "true", "允许下界"),
+    ("view-distance", "10", "视距"),
+    ("simulation-distance", "10", "模拟距离"),
+    ("spawn-protection", "16", "出生点保护半径(0=关闭)"),
+    ("spawn-animals", "true", "生成动物"),
+    ("spawn-monsters", "true", "生成怪物"),
+    ("spawn-npcs", "true", "生成村民"),
+    ("generate-structures", "true", "生成结构(村庄/神殿等)"),
+    ("level-name", "world", "世界文件夹名"),
+    ("level-seed", "", "种子(空=随机)"),
+    ("level-type", "minecraft\\:normal", "世界类型 normal/flat/largebiomes"),
+    ("generator-settings", "{}", "超平坦自定义"),
+    ("max-world-size", "29999984", "世界边界半径"),
+    ("max-tick-time", "60000", "单 tick 超时毫秒(-1=禁用崩溃检测)"),
+    ("max-chained-neighbor-updates", "1000000", "连锁方块更新上限"),
+    ("sync-chunk-writes", "true", "同步写区块(true=防损坏 false=性能好)"),
+    ("player-idle-timeout", "0", "挂机踢出分钟数(0=关闭)"),
+    ("rate-limit", "0", "发包速率限制"),
+    ("network-compression-threshold", "256", "网络压缩阈值"),
+    ("use-native-transport", "true", "使用 epoll 网络传输"),
+    ("prevent-proxy-connections", "false", "防代理(需正版)"),
+    ("enforce-secure-profile", "true", "强制安全聊天签名"),
+    ("log-ips", "true", "日志记录玩家 IP"),
+    ("hide-online-players", "false", "隐藏在线人数"),
+    ("enable-command-block", "false", "命令方块"),
+    ("enable-jmx-monitoring", "false", "JMX 监控"),
+    ("enable-query", "false", "GameSpy4 查询"),
+    ("query.port", "25565", "查询端口"),
+    ("enable-rcon", "false", "RCON 远程控制台"),
+    ("rcon.port", "25575", "RCON 端口"),
+    ("rcon.password", "", "RCON 密码"),
+    ("broadcast-console-to-ops", "true", "控制台消息发给 OP"),
+    ("broadcast-rcon-to-ops", "true", "RCON 消息发给 OP"),
+    ("op-permission-level", "4", "OP 权限等级"),
+    ("function-permission-level", "2", "函数权限等级"),
+    ("enable-status", "true", "服务器列表在线状态"),
+    ("require-resource-pack", "false", "强制资源包"),
+    ("resource-pack", "", "资源包地址"),
+    ("resource-pack-prompt", "", "资源包提示"),
+    ("resource-pack-sha1", "", "资源包校验"),
+    ("resource-pack-id", "", "资源包 UUID"),
+    ("initial-enabled-packs", "vanilla", "初始启用的数据包"),
+    ("initial-disabled-packs", "", "初始禁用的数据包"),
+    ("text-filtering-config", "", "聊天过滤配置"),
+    ("entity-broadcast-range-percentage", "100", "实体广播距离百分比"),
+]
+
+
+# ---------- 基础工具 ----------
+
+def c(text, color="0"):
+    """着色输出"""
+    codes = {"red": "31", "green": "32", "yellow": "33", "blue": "34",
+             "cyan": "36", "bold": "1"}
+    if not sys.stdout.isatty():
+        return text
+    return f"\033[{codes.get(color, '0')}m{text}\033[0m"
+
+
+def ask(prompt, default=""):
+    """带默认值的输入, 回车=默认"""
+    tip = f" [{c(default, 'cyan')}]" if default != "" else ""
+    ans = input(f"{prompt}{tip}: ").strip()
+    return ans if ans != "" else default
+
+
+def ask_bool(prompt, default=True):
+    d = "y" if default else "n"
+    while True:
+        ans = ask(f"{prompt} (y/n)", d).lower()
+        if ans in ("y", "yes", "true"):
+            return True
+        if ans in ("n", "no", "false"):
+            return False
+        print(c("  请输入 y 或 n", "red"))
+
+
+def step(n, title):
+    print(f"\n{c(f'[{n}]', 'cyan')} {c(title, 'bold')}")
+
+
+def vkey(ver):
+    """版本号 → 可比较元组, 如 1.21.1 → (1,21,1)"""
+    return tuple(int(x) for x in re.findall(r"\d+", ver)[:3] + [0, 0, 0])
+
+
+def java_major_for(version):
+    """根据 MC 版本返回所需 Java 主版本"""
+    v = vkey(version)
+    for lo, hi, major in JAVA_RULES:
+        if lo <= v <= hi:
+            return major
+    return 21
+
+
+# ---------- 版本清单 ----------
+
+def load_manifest(force=False):
+    """拉取版本清单(BMCLAPI), 24h 缓存, 失败用内置列表"""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache = os.path.join(CACHE_DIR, "versions.json")
+    if not force and os.path.exists(cache):
+        try:
+            with open(cache) as f:
+                data = json.load(f)
+            if time.time() - data.get("ts", 0) < 86400:
+                return data["versions"]
+        except (OSError, ValueError):
+            pass
+    try:
+        req = urllib.request.Request(MANIFEST_URL, headers={"User-Agent": APP})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+        versions = [{"id": v["id"], "type": v["type"], "url": v["url"]}
+                    for v in data["versions"]]
+        with open(cache, "w") as f:
+            json.dump({"ts": time.time(), "versions": versions}, f)
+        return versions
+    except Exception as e:
+        print(c(f"  在线清单获取失败({e}), 使用内置列表", "yellow"))
+        return [{"id": v, "type": "release", "url": ""} for v in FALLBACK_VERSIONS]
+
+
+def pick_version():
+    """① 选择版本: 列出最近正式版, 也可直接输入任意版本号"""
+    step(1, "选择 Minecraft 版本")
+    versions = load_manifest()
+    releases = [v for v in versions if v["type"] == "release"]
+    by_id = {v["id"]: v for v in versions}
+    print(c("  最近正式版:", "cyan"))
+    for i, v in enumerate(releases[:15]):
+        print(f"    {i+1:>2}. {v['id']}")
+    print(f"    也可以直接输入任意版本号(含快照), 如 {c('1.8.8', 'cyan')}")
+    while True:
+        ans = ask("  输入序号或版本号").strip()
+        if ans.isdigit() and 1 <= int(ans) <= len(releases[:15]):
+            return releases[int(ans) - 1]
+        if ans in by_id:
+            return by_id[ans]
+        print(c("  无效输入", "red"))
+
+
+# ---------- Java ----------
+
+def _java_major(java_bin):
+    try:
+        out = subprocess.run([java_bin, "-version"], capture_output=True,
+                             text=True, timeout=10).stderr.splitlines()[0]
+        m = re.search(r'version "(\d+)(?:\.(\d+))?', out)
+        if m:
+            return int(m.group(1)) if m.group(1) != "1" else int(m.group(2))
+    except Exception:
+        pass
+    return None
+
+
+def detect_javas():
+    """扫描系统已装 Java, 返回 {主版本: [bin路径]}"""
+    found = {}
+    cands = set()
+    jh = os.environ.get("JAVA_HOME")
+    if jh:
+        cands.add(os.path.join(jh, "bin", "java"))
+    for p in shlex.split(os.environ.get("PATH", "")):
+        cands.add(os.path.join(p, "java"))
+    for root in ("/usr/lib/jvm", "/opt/java", "/usr/java",
+                 os.path.expanduser("~/.jdks"), os.path.expanduser("~/sdkman")):
+        if os.path.isdir(root):
+            for entry in os.listdir(root):
+                cands.add(os.path.join(root, entry, "bin", "java"))
+    for p in sorted(cands):
+        if not os.path.isfile(p):
+            continue
+        p = os.path.realpath(p)
+        major = _java_major(p)
+        if major and p not in found.setdefault(major, []):
+            found[major].append(p)
+    return found
+
+
+def pick_java(version):
+    """为 MC 版本找匹配的 Java, 找不到则报错退出"""
+    need = java_major_for(version)
+    javas = detect_javas()
+    if need in javas:
+        return javas[need][0]
+    got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
+    sys.exit(c(f"\n[错误] {version} 需要 Java {need}, 本机只有: {got}\n"
+               f"       请安装 JDK {need} 后重试 (如 apt install openjdk-{need}-jdk)",
+               "red"))
+
+
+# ---------- server.properties ----------
+
+def render_properties(props):
+    """props: {key: value}, 按 PROPS 顺序带中文注释输出"""
+    lines = [f"# 由 {APP} 生成 {time.strftime('%Y-%m-%d %H:%M')}",
+             "# 修改后可用: 1b1t-open-server start <目录> 重新开服"]
+    for key, default, desc in PROPS:
+        val = props.get(key, default)
+        lines.append(f"\n# {desc}")
+        lines.append(f"{key}={val}")
+    return "\n".join(lines) + "\n"
+
+
+def advanced_editor(props):
+    """⑤ 高级选项: 列出全部项, 输入 '编号 值' 修改, 输入 done 结束"""
+    step(5, "高级选项 (编辑 server.properties 全部项)")
+    if not ask_bool("  要进入高级选项吗?", False):
+        return props
+    while True:
+        print()
+        for i, (key, default, desc) in enumerate(PROPS):
+            val = props.get(key, default)
+            print(f"  {c(str(i+1).rjust(2), 'cyan')}. {key:<38} = {c(val, 'green'):<20} {desc}")
+        print(c("  用法: 输入 '编号 值' 修改该项, 回车/done 结束", "yellow"))
+        ans = ask("  修改").strip()
+        if ans in ("", "done", "q"):
+            return props
+        m = re.match(r"(\d+)\s+(.*)", ans)
+        if m:
+            i = int(m.group(1)) - 1
+            if 0 <= i < len(PROPS):
+                props[PROPS[i][0]] = m.group(2).strip()
+                print(c(f"  已设置 {PROPS[i][0]} = {m.group(2).strip()}", "green"))
+                continue
+        print(c("  格式错误, 例如: 3 25567 或 12 hard", "red"))
+
+
+# ---------- 下载 ----------
+
+def fetch(url, dest, expect_sha1=None, expect_size=None):
+    """下载文件, 显示进度, 支持续传, 失败返回 None"""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    headers = {"User-Agent": APP}
+    have = os.path.getsize(dest) if os.path.exists(dest) else 0
+    if have:
+        headers["Range"] = f"bytes={have}-"
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            total = int(r.headers.get("Content-Length", 0)) + have
+            mode = "ab" if have else "wb"
+            with open(dest, mode) as f:
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    done = f.tell()
+                    pct = done * 100 // total if total else 0
+                    print(f"\r  下载中 {done>>20}MB"
+                          + (f"/{total>>20}MB {pct}%" if total else ""),
+                          end="", flush=True)
+            print()
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and have:
+            # Range 起点超出文件末尾 = 文件已下载完整
+            print(c("  文件已完整, 跳过下载", "green"))
+            return True
+        print(c(f"  下载失败: {e}", "red"))
+        return False
+    except Exception as e:
+        print(c(f"  下载失败: {e}", "red"))
+        return False
+    if expect_sha1:
+        import hashlib
+        h = hashlib.sha1()
+        with open(dest, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != expect_sha1:
+            print(c("  SHA1 校验失败, 文件可能损坏", "red"))
+            return False
+    return True
+
+
+def get_server_jar(version, dest):
+    """下载对应版本的官方服务端, 优先 BMCLAPI 镜像, 失败回退 Mojang"""
+    info = {}
+    try:
+        req = urllib.request.Request(BMCL_VERSION.format(vid=version),
+                                     headers={"User-Agent": APP})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            info = json.loads(r.read().decode())
+    except Exception:
+        pass
+    sha1 = info.get("downloads", {}).get("server", {}).get("sha1")
+    size = info.get("downloads", {}).get("server", {}).get("size")
+    url = info.get("downloads", {}).get("server", {}).get("url") or ""
+    # 已存在且大小一致就复用
+    if os.path.exists(dest) and size and os.path.getsize(dest) == size:
+        print(c(f"  server.jar 已存在, 跳过下载", "green"))
+        return True
+    print(f"  下载 {c(version, 'cyan')} 服务端核心...")
+    if fetch(BMCL_SERVER_JAR.format(vid=version), dest, sha1, size):
+        return True
+    if url and url != BMCL_SERVER_JAR.format(vid=version):
+        print(c("  镜像失败, 尝试官方源...", "yellow"))
+        return fetch(url, dest, sha1, size)
+    return False
+
+
+# ---------- 服务器运行状态 ----------
+
+def runtime_dir(server_dir):
+    return os.path.join(server_dir, RUNTIME_DIR)
+
+
+def load_cfg(server_dir):
+    try:
+        with open(os.path.join(runtime_dir(server_dir), "config.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_cfg(server_dir, cfg):
+    os.makedirs(runtime_dir(server_dir), exist_ok=True)
+    with open(os.path.join(runtime_dir(server_dir), "config.json"), "w") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def read_pid(server_dir):
+    try:
+        with open(os.path.join(runtime_dir(server_dir), "pid.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def is_running(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def open_fifo(fifo, timeout=10):
+    """打开 fifo 写端(非阻塞轮询, 避免读端未就绪时死锁)"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            os.set_blocking(fd, True)
+            return fd
+        except OSError:
+            time.sleep(0.1)
+    return None
+
+
+def send_console(server_dir, line, timeout=10):
+    """通过 stdin fifo 向服务器控制台发送命令"""
+    fifo = os.path.join(runtime_dir(server_dir), FIFO_NAME)
+    try:
+        if not stat.S_ISFIFO(os.stat(fifo).st_mode):
+            return False
+    except OSError:
+        return False
+    fd = open_fifo(fifo, timeout)
+    if fd is None:
+        return False
+    with os.fdopen(fd, "w") as f:
+        f.write(line + "\n")
+        f.flush()
+    return True
+
+
+def wait_ready(server_dir, timeout=180):
+    """等待服务器启动完成(日志出现 Done)"""
+    log = os.path.join(server_dir, "logs", "latest.log")
+    deadline = time.time() + timeout
+    seen = 0
+    while time.time() < deadline:
+        if os.path.exists(log):
+            size = os.path.getsize(log)
+            if size > seen:
+                with open(log, "r", errors="ignore") as f:
+                    f.seek(seen)
+                    text = f.read()
+                seen = size
+                if "Done (" in text:
+                    return True
+        time.sleep(0.5)
+    return False
+
+
+# ---------- 自主排查 ----------
+
+# (日志特征, 问题, 修复建议)
+LOG_PATTERNS = [
+    ("Failed to bind to port", "日志显示端口绑定失败", "更换端口后重启"),
+    ("already in use", "日志显示端口被占用", "更换端口后重启"),
+    ("UnsupportedClassVersionError", "Java 版本不匹配", "安装匹配的 JDK 后重试"),
+    ("Unsupported major.minor version", "Java 版本过低", "安装匹配的 JDK 后重试"),
+    ("You need to agree to the EULA", "未同意 EULA", "把 eula.txt 改为 eula=true"),
+    ("OutOfMemoryError", "内存不足崩溃", "调大内存上限(开服参数)或释放内存"),
+    ("Invalid or corrupt jarfile", "server.jar 损坏", "删除 server.jar 重新开服"),
+    ("No space left on device", "磁盘已满", "清理磁盘后重启"),
+    ("A problem occurred running the Server", "服务器启动报错", "查看上方日志的完整错误输出"),
+]
+
+
+def parse_ram(ram):
+    """'2G'/'1024M' → MB"""
+    m = re.match(r"(\d+)([GM]?)", str(ram).upper())
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n * 1024 if m.group(2) == "G" else n
+
+
+def diagnose(server_dir, cfg=None):
+    """自主排查: 检查 Java/端口/jar/EULA/磁盘/权限/内存/日志, 返回问题数"""
+    print(f"\n{c('=== 自主排查 ===', 'bold')}")
+    issues = 0
+
+    def ok(msg):
+        print(f"  {c('✓', 'green')} {msg}")
+
+    def bad(msg, fix):
+        nonlocal issues
+        issues += 1
+        print(f"  {c('✗', 'red')} {msg}\n      {c('→ ' + fix, 'yellow')}")
+
+    def warn(msg, fix):
+        print(f"  {c('!', 'yellow')} {msg}\n      {c('→ ' + fix, 'yellow')}")
+
+    # 1. Java
+    if cfg and cfg.get("version"):
+        need = java_major_for(cfg["version"])
+        javas = detect_javas()
+        if need in javas:
+            ok(f"Java {need} 已安装: {javas[need][0]}")
+        else:
+            got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
+            bad(f"MC {cfg['version']} 需要 Java {need}, 本机只有 {got}",
+                f"apt install openjdk-{need}-jdk 或安装 JDK {need}")
+
+    # 2. 端口
+    if cfg and cfg.get("port"):
+        port = int(cfg["port"])
+        s = socket.socket()
+        try:
+            s.bind(("0.0.0.0", port))
+            s.close()
+            ok(f"端口 {port} 空闲")
+        except OSError as e:
+            bad(f"端口 {port} 被占用",
+                f"更换端口, 或停掉占用进程: ss -tlnp | grep {port}")
+
+    # 3. server.jar
+    jar = os.path.join(server_dir, "server.jar")
+    if os.path.exists(jar) and os.path.getsize(jar) > 0:
+        ok("server.jar 存在")
+    elif os.path.exists(jar):
+        bad("server.jar 是空文件(0 字节)", "删除 server.jar 后重新开服自动下载")
+    else:
+        warn("server.jar 不存在", "开服时会自动从 BMCLAPI 镜像下载")
+
+    # 4. EULA
+    eula_path = os.path.join(server_dir, "eula.txt")
+    if os.path.exists(eula_path):
+        with open(eula_path, errors="ignore") as f:
+            if "eula=true" in f.read():
+                ok("已同意 EULA")
+            else:
+                bad("未同意 EULA", "把 eula.txt 里的 eula 改为 true")
+    else:
+        warn("没有 eula.txt", "开服时会自动生成(默认同意)")
+
+    # 5. 磁盘空间
+    du = shutil.disk_usage(server_dir)
+    if du.free > 1 << 30:
+        ok(f"磁盘剩余 {du.free >> 30} GB")
+    elif du.free > 200 << 20:
+        warn(f"磁盘仅剩 {du.free >> 20} MB", "注意清理, 世界存档会持续增长")
+    else:
+        bad(f"磁盘空间不足 ({du.free >> 20} MB)", "清理磁盘后再开服")
+
+    # 6. 目录权限
+    if os.access(server_dir, os.W_OK):
+        ok("服务器目录可写")
+    else:
+        bad("服务器目录不可写", f"chmod u+w {server_dir}")
+
+    # 7. 内存
+    try:
+        with open("/proc/meminfo") as f:
+            m = re.search(r"MemAvailable:\s+(\d+)", f.read())
+        avail_mb = int(m.group(1)) // 1024 if m else 0
+        if cfg and cfg.get("ram"):
+            want = parse_ram(cfg["ram"])
+            if want and want > avail_mb:
+                bad(f"内存不足: 配置 {cfg['ram']} > 可用 {avail_mb}M",
+                    "调小内存上限, 或释放内存后重试")
+            else:
+                ok(f"内存可用 {avail_mb}M (配置 {cfg.get('ram', '-')})")
+    except OSError:
+        pass
+
+    # 8. 日志错误分析
+    rt = runtime_dir(server_dir)
+    for log in (os.path.join(server_dir, "logs", "latest.log"),
+                os.path.join(rt, "console.log")):
+        if not os.path.exists(log):
+            continue
+        with open(log, errors="ignore") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))
+            tail = f.read()
+        hit = None
+        for pattern, msg, fix in LOG_PATTERNS:
+            if pattern in tail:
+                hit = (msg, fix)
+                break
+        if hit:
+            bad(hit[0], hit[1])
+        else:
+            ok("日志无已知错误特征")
+        break
+
+    print(c("=== 排查结束 ===\n", "bold"))
+    return issues
+
+
+# ---------- 开服 ----------
+
+def start_server(server_dir, cfg, wait=True):
+    """按配置启动服务器, 返回 Popen"""
+    os.makedirs(os.path.join(server_dir, "logs"), exist_ok=True)
+    rt = runtime_dir(server_dir)
+    os.makedirs(rt, exist_ok=True)
+
+    # stdin fifo (供 console/stop/gamerule 注入)
+    fifo = os.path.join(rt, FIFO_NAME)
+    if os.path.exists(fifo):
+        os.remove(fifo)
+    os.mkfifo(fifo)
+
+    java = pick_java(cfg["version"])
+    ram = cfg.get("ram", "2G")
+    console_log = open(os.path.join(rt, "console.log"), "ab")
+
+    cmd = (f"cd {shlex.quote(server_dir)} && exec {shlex.quote(java)} "
+           f"-Xms512M -Xmx{ram} -jar server.jar nogui < {shlex.quote(fifo)}")
+    p = subprocess.Popen(["bash", "-c", cmd], stdin=subprocess.DEVNULL,
+                         stdout=console_log, stderr=subprocess.STDOUT,
+                         start_new_session=True)
+    console_log.close()
+    # 常驻写端: 保证 fifo 永远有 writer, java 的 stdin 不会读到 EOF
+    keeper = subprocess.Popen(
+        ["bash", "-c", f"exec sleep infinity > {shlex.quote(fifo)}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+    time.sleep(1)
+    if p.poll() is not None:
+        keeper.terminate()
+        print(c(f"[错误] 服务器进程启动失败(退出码 {p.returncode}), "
+                f"详见 {rt}/console.log", "red"))
+        diagnose(server_dir, cfg)
+        sys.exit(1)
+    with open(os.path.join(rt, "pid.json"), "w") as f:
+        json.dump({"pid": p.pid, "keeper": keeper.pid, "start": int(time.time())}, f)
+    save_cfg(server_dir, cfg)
+    return p
+
+
+def do_start(server_dir, dry_run=False):
+    """start: 有配置直接开, 无配置走向导"""
+    cfg = load_cfg(server_dir)
+    if cfg is None:
+        cfg = wizard(server_dir)
+    else:
+        print(c(f"已找到配置: MC {cfg['version']} 端口 {cfg['port']} "
+                f"内存 {cfg.get('ram','2G')}", "cyan"))
+
+    # 检查是否已在运行
+    old = read_pid(server_dir)
+    if old and is_running(old["pid"]):
+        sys.exit(c(f"[错误] 服务器已在运行 (PID {old['pid']})", "red"))
+
+    # 写 eula + 配置
+    with open(os.path.join(server_dir, "eula.txt"), "w") as f:
+        f.write("# 继续使用即代表您同意 Minecraft EULA\n"
+                "# https://aka.ms/MinecraftEULA\neula=true\n")
+    with open(os.path.join(server_dir, "server.properties"), "w") as f:
+        f.write(render_properties(cfg["props"]))
+    save_cfg(server_dir, cfg)
+    if dry_run:
+        print(c("dry-run: 配置文件已生成, 未下载/未启动", "yellow"))
+        return
+
+    # 先确认 Java 匹配, 再下载
+    pick_java(cfg["version"])
+
+    # 下载核心
+    jar = os.path.join(server_dir, "server.jar")
+    if not get_server_jar(cfg["version"], jar):
+        sys.exit(c("[错误] 服务端下载失败", "red"))
+
+    print(c(f"\n正在启动: MC {cfg['version']} 端口 {cfg['port']} "
+            f"内存 {cfg.get('ram','2G')}", "bold"))
+    p = start_server(server_dir, cfg)
+    print(c(f"  已启动! PID {p.pid}", "green"))
+    print(f"  日志: {server_dir}/logs/latest.log")
+
+    # 等服务器就绪后注入 gamerule (如死亡不掉落)
+    if cfg.get("gamerules"):
+        print(f"  等待服务器就绪...")
+        if wait_ready(server_dir):
+            for rule, val in cfg["gamerules"].items():
+                send_console(server_dir, f"gamerule {rule} {val}")
+            print(c(f"  已设置游戏规则: " + ", ".join(
+                f"{k}={v}" for k, v in cfg["gamerules"].items()), "green"))
+        else:
+            print(c("  等待就绪超时, 游戏规则未注入(可用 console 命令手动设置)", "yellow"))
+            diagnose(server_dir, cfg)
+    print(c(f"\n完成! 关服: 1b1t-open-server stop {server_dir}", "green"))
+
+
+def do_stop(server_dir):
+    old = read_pid(server_dir)
+    if not old or not is_running(old["pid"]):
+        print(c("服务器未在运行", "yellow"))
+        return 0
+    print(f"发送 stop 命令 (PID {old['pid']})...")
+    if send_console(server_dir, "stop"):
+        deadline = time.time() + 60
+        while is_running(old["pid"]) and time.time() < deadline:
+            time.sleep(1)
+    if is_running(old["pid"]):
+        print(c("优雅关闭超时, 发送 SIGTERM...", "yellow"))
+        os.kill(old["pid"], signal.SIGTERM)
+        time.sleep(10)
+    if is_running(old["pid"]):
+        print(c("强制结束 SIGKILL", "red"))
+        os.kill(old["pid"], signal.SIGKILL)
+    keeper = old.get("keeper")
+    if keeper:
+        try:
+            os.kill(keeper, signal.SIGTERM)
+            time.sleep(1)
+            if is_running(keeper):
+                os.kill(keeper, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        os.remove(os.path.join(runtime_dir(server_dir), "pid.json"))
+    except OSError:
+        pass
+    print(c("已停止", "green"))
+
+
+def do_status(server_dir):
+    old = read_pid(server_dir)
+    cfg = load_cfg(server_dir)
+    if not old or not is_running(old["pid"]):
+        print(c("状态: 未运行", "yellow"))
+        if cfg:
+            print(f"配置: MC {cfg['version']} 端口 {cfg['port']} "
+                  f"内存 {cfg.get('ram','2G')}")
+        return 0
+    uptime = int(time.time()) - old.get("start", 0)
+    print(c("状态: 运行中", "green"))
+    print(f"  PID: {old['pid']}  已运行: {uptime//3600}h{uptime%3600//60}m")
+    if cfg:
+        print(f"  MC: {cfg['version']}  端口: {cfg['port']}  内存: {cfg.get('ram','2G')}")
+        try:
+            s = socket.create_connection(("127.0.0.1", int(cfg["port"])), 2)
+            s.close()
+            print(c("  端口监听: 正常", "green"))
+        except OSError:
+            print(c("  端口监听: 未就绪", "yellow"))
+
+
+# ---------- 向导 ----------
+
+def wizard(server_dir):
+    """交互式四步向导 + 高级选项, 返回配置 dict"""
+    print(c(BANNER, "cyan"))
+
+    ver = pick_version()["id"]
+
+    if server_dir is None:
+        step(2, "选择服务器位置")
+        default_dir = os.path.expanduser(f"~/1b1t-{ver}")
+        server_dir = os.path.abspath(
+            ask(f"  服务器目录", default_dir))
+    os.makedirs(server_dir, exist_ok=True)
+    print(f"  目录: {c(server_dir, 'green')}")
+    if os.listdir(server_dir):
+        print(c("  注意: 目录非空, 已有文件不会被覆盖(server.properties 除外)", "yellow"))
+
+    step(3, "选择端口")
+    port = ask("  端口", "25565")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        sys.exit(c("[错误] 端口无效", "red"))
+
+    step(4, "常见配置 (回车=默认)")
+    props = {}
+    props["server-port"] = port
+    props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
+    props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
+    keep = ask_bool("  死亡不掉落", False)
+    props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
+    props["difficulty"] = ask("  难度 easy/normal/hard/peaceful", "normal")
+    props["max-players"] = ask("  最大玩家数", "20")
+    props["view-distance"] = ask("  视距", "10")
+    props["white-list"] = str(ask_bool("  白名单", False)).lower()
+    props["pvp"] = str(ask_bool("  PVP", True)).lower()
+    props["level-seed"] = ask("  种子(空=随机)", "")
+    ram = ask("  内存上限(如 2G/1024M)", "2G")
+
+    advanced_editor(props)
+
+    cfg = {"version": ver, "port": int(port), "ram": ram, "props": props,
+           "gamerules": {}}
+    if keep:
+        cfg["gamerules"]["keepInventory"] = "true"
+
+    step(6, "确认")
+    print(f"  MC 版本: {c(ver, 'green')}    端口: {c(port, 'green')}    "
+          f"内存: {c(ram, 'green')}")
+    print(f"  目录: {c(server_dir, 'green')}")
+    if not ask_bool("  确认开服?", True):
+        sys.exit("已取消")
+    return cfg
+
+
+# ---------- 入口 ----------
+
+def usage():
+    print(f"""用法: {APP} [命令] [参数]
+
+  无参数 / start     一键开服(无配置时进入向导: 版本→目录→端口→配置→高级选项)
+  start <目录>       按已有配置开服
+  stop <目录>        关服(默认当前目录)
+  restart <目录>     重启
+  status <目录>      查看状态
+  doctor <目录>      自主排查问题(开服失败时也会自动运行)
+  console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
+  其他: --dry-run 只生成配置, 不下载不启动""")
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help", "help"):
+        usage()
+        return 0
+
+    cmd = "start"
+    server_dir = None
+    dry_run = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    if args and args[0] in ("start", "stop", "restart", "status", "doctor",
+                            "console"):
+        cmd = args.pop(0)
+    if args and not args[0].startswith("-"):
+        server_dir = os.path.abspath(args.pop(0))
+        if cmd == "console" and args:
+            return do_console(server_dir, " ".join(args))
+    elif cmd == "console":
+        sys.exit("console 需要: console <目录> <命令>")
+
+    if server_dir is None:
+        server_dir = os.getcwd()
+
+    if cmd == "start":
+        do_start(server_dir, dry_run=dry_run)
+    elif cmd == "stop":
+        do_stop(server_dir)
+    elif cmd == "restart":
+        do_stop(server_dir)
+        do_start(server_dir)
+    elif cmd == "status":
+        do_status(server_dir)
+    elif cmd == "doctor":
+        do_doctor(server_dir)
+    return 0
+
+
+def do_doctor(server_dir):
+    """手动排查"""
+    cfg = load_cfg(server_dir)
+    print(f"服务器目录: {c(server_dir, 'cyan')}")
+    old = read_pid(server_dir)
+    if old and is_running(old["pid"]):
+        print(c(f"服务器正在运行 (PID {old['pid']})", "green"))
+    issues = diagnose(server_dir, cfg)
+    if issues == 0:
+        print(c("未发现问题", "green"))
+    else:
+        print(c(f"发现 {issues} 个问题, 按上方建议修复", "red"))
+    return issues
+
+
+def do_console(server_dir, line):
+    if not send_console(server_dir, line):
+        sys.exit(c("[错误] 无法连接控制台(服务器未运行?)", "red"))
+    print(c(f"已发送: {line}", "green"))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n已取消")
+        sys.exit(130)
+    except EOFError:
+        print("\n已取消")
+        sys.exit(130)

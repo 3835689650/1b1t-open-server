@@ -1,0 +1,18 @@
+Package: 1b1t-open-server
+Version: 1.0.0
+Architecture: all
+Maintainer: 1b1t <3835689650@users.noreply.github.com>
+Depends: python3
+Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.0_all.deb
+Size: 11524
+MD5sum: 445896a657207d84fe4278aa121bf21e
+SHA1: 0084206888598db2ecaf692216e0d9925baee8c1
+SHA256: 64c012d2e3ff3053c957725b7ed866c739dc004fbabfe643d003566e500fc87b
+Section: utils
+Priority: optional
+Homepage: https://github.com/3835689650/1b1t-open-server
+Description: Minecraft 一键开服工具 (1b1t)
+ 向导式开服: 选择版本/目录/端口/常见配置, 高级选项可编辑
+ server.properties 全部项; 自动下载服务端核心、自动匹配 Java、
+ doctor 自主排查问题; 支持 start/stop/restart/status/console。
+

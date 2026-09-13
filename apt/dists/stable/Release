@@ -1,0 +1,10 @@
+Origin: 1b1t
+Label: 1b1t apt repo
+Suite: stable
+Codename: stable
+Architectures: all
+Components: main
+Date: Sun, 13 Sep 2026 03:45:39 +0000
+SHA256:
+ 3fa60434ce6c921c94634632cae78262c15cdd0fdd30cd5016ac869ecb92a6c6 main/binary-all/Packages
+ c690e918ebaa44757dfdbff1d93846e94ebbfd013c78edecea8bcea74246b5b7 main/binary-all/Packages.gz
