@@ -606,20 +606,23 @@ def attach_console(server_dir):
     sys.stdout.flush()
     print(c("已接入控制台: 直接输入命令执行, exit 或 Ctrl+C 退出(服务器继续运行)",
             "green"))
+    def flush_logs():
+        for lg in logs:
+            if not os.path.exists(lg):
+                continue
+            size = os.path.getsize(lg)
+            if size < pos[lg]:  # log4j 轮转后大小重置, 从头读
+                pos[lg] = 0
+            if size > pos[lg]:
+                with open(lg, errors="ignore") as f:
+                    f.seek(pos[lg])
+                    sys.stdout.write(f.read())
+                sys.stdout.flush()
+                pos[lg] = size
+
     try:
         while True:
-            for lg in logs:
-                if not os.path.exists(lg):
-                    continue
-                size = os.path.getsize(lg)
-                if size < pos[lg]:  # log4j 轮转后大小重置, 从头读
-                    pos[lg] = 0
-                if size > pos[lg]:
-                    with open(lg, errors="ignore") as f:
-                        f.seek(pos[lg])
-                        sys.stdout.write(f.read())
-                    sys.stdout.flush()
-                    pos[lg] = size
+            flush_logs()
             if select.select([sys.stdin], [], [], 0.2)[0]:
                 line = sys.stdin.readline()
                 if not line:
@@ -630,9 +633,18 @@ def attach_console(server_dir):
                 if line.lower() in ("exit", "quit"):
                     break
                 send_console(server_dir, line)
+            # 服务器停了(如在控制台输了 stop) → 刷完剩余日志自动退出
+            info = read_pid(server_dir)
+            if not info or not is_running(info["pid"]):
+                flush_logs()
+                print(c("服务器已停止, 退出控制台", "yellow"))
+                break
     except KeyboardInterrupt:
         print()
-    print(c("已退出控制台(服务器仍在运行)", "yellow"))
+        print(c("已退出控制台(服务器仍在运行)", "yellow"))
+        return
+    if read_pid(server_dir) and is_running(read_pid(server_dir)["pid"]):
+        print(c("已退出控制台(服务器仍在运行)", "yellow"))
 
 
 def wait_ready(server_dir, timeout=180):
