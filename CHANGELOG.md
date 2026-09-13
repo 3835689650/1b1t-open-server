@@ -6,12 +6,12 @@
 
 ### 调整
 - 官网迁移至 www.1b1t.cn (官网/apt 源/镜像下载中心/serverdown 镜像出口)
-- 旧地址 openmcserver.cn 保留兼容, 工具下载链改用新域名
+- 工具下载链改用新域名 www.1b1t.cn
 
 ## v1.0.14 - 2026-09-13
 
 ### 新增
-- serverdown 镜像下载面板: openmcserver.cn/mirror/
+- serverdown 镜像下载面板: www.1b1t.cn/mirror/
   (分类浏览/搜索/统计/手动下载全部镜像文件)
 - 所有选择界面加 0 退出 (版本/类型/mod版本/难度/内存/目录/端口)
 
@@ -77,7 +77,7 @@
 ### 新增
 - 安装包本地镜像: 下载过的文件自动缓存到 ~/1b1t-mirror, 下次秒取
   (mirror 子命令可预取指定版本的 vanilla/mod 安装包)
-- 镜像 HTTP 出口: openmcserver.cn/serverdown (bind mount + nginx),
+- 镜像 HTTP 出口: www.1b1t.cn/serverdown (bind mount + nginx),
   其他机器从隧道下载, 本机直接文件复制
 - 下载自动切换源: 本地镜像 → serverdown 镜像 → 官方 → BMCLAPI
 - NeoForge/Forge 安装前自动复用本机已有依赖库 libraries/
@@ -152,5 +152,5 @@
 - 子命令: start/stop/restart/status/doctor/console, --dry-run 只生成配置
 - 优雅关服(控制台 stop 命令 + 超时降级信号)
 - 启动横幅 banner
-- APT 安装包 + GPG 签名仓库 + 官网(openmcserver.cn/1b1t)
+- APT 安装包 + GPG 签名仓库 + 官网(www.1b1t.cn)
 - 三平台支持: Linux / Windows / macOS(Java 检测、进程管理、内存诊断均已适配)

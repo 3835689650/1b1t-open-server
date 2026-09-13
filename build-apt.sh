@@ -10,7 +10,6 @@ SITE_SRC="${SITE_SRC:-$ROOT/../openmc-pan-build/1b1t/index.html}"
 SITE_DST="/www/wwwroot/www.1b1t.cn/index.html"
 MIRROR_PANEL_SRC="${MIRROR_PANEL_SRC:-$ROOT/../openmc-pan-build/mirror/index.php}"
 APT_DST="/www/wwwroot/www.1b1t.cn/1b1t-apt"
-APT_DST_OLD="/www/wwwroot/openmcserver.cn/1b1t-apt"  # 旧地址保留兼容
 REPO="3835689650/1b1t-open-server"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -27,7 +26,7 @@ Priority: optional
 Architecture: all
 Depends: python3
 Maintainer: 1b1t <3835689650@users.noreply.github.com>
-Homepage: https://openmcserver.cn/1b1t/
+Homepage: https://www.1b1t.cn/
 Description: Minecraft 一键开服工具 (1b1t)
  向导式开服: 选择版本/目录/端口/常见配置, 高级选项可编辑
  server.properties 全部项; 自动下载服务端核心、自动匹配 Java、
@@ -146,7 +145,7 @@ open(site, "w").write(page)
 print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 {entries[0][0]}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
-    echo "  官网已部署: https://openmcserver.cn/1b1t/"
+    echo "  官网已部署: https://www.1b1t.cn/"
 else
     echo "  未找到官网源码, 跳过 ($SITE_SRC)"
 fi
@@ -160,11 +159,6 @@ if [ -d "$(dirname "$APT_DST")" ]; then
     echo "  已同步: https://www.1b1t.cn/1b1t-apt/"
 else
     echo "  未找到站点目录, 跳过"
-fi
-if [ -d "$(dirname "$APT_DST_OLD")" ]; then  # 旧地址保留兼容
-    sudo mkdir -p "$APT_DST_OLD"
-    sudo cp -r "$ROOT"/apt/. "$APT_DST_OLD"/
-    sudo chown -R www:www "$APT_DST_OLD"
 fi
 
 echo "完成! 安装方法:"
