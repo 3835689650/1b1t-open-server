@@ -61,8 +61,10 @@ git commit -m "release $VER" --quiet || true
 git push origin main --quiet
 
 # gh-pages 只放 apt/ 目录内容
+git worktree prune
 git worktree add -B gh-pages "$WORK/pages" --quiet
-rm -rf "$WORK/pages"/* "$WORK/pages"/.[!.]* 2>/dev/null || true
+# 清空但保留 .git 文件 (find 排除, 避免 rm .[!.]* 误删)
+find "$WORK/pages" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
 cp -r "$ROOT"/apt/. "$WORK/pages/"
 git -C "$WORK/pages" add -A
 git -C "$WORK/pages" commit -m "apt $VER" --quiet
