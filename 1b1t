@@ -218,6 +218,12 @@ def step(n, title):
     print(f"\n{c(f'[{n}]', 'cyan')} {c(title, 'bold')}")
 
 
+def quit_ans(ans):
+    """输入 0/q 退出"""
+    if ans.strip() in ("0", "q", "quit", "exit"):
+        sys.exit(c("已退出", "yellow"))
+
+
 def vkey(ver):
     """版本号 → 可比较元组, 如 1.21.1 → (1,21,1)"""
     return tuple(int(x) for x in re.findall(r"\d+", ver)[:3] + [0, 0, 0])
@@ -307,8 +313,10 @@ def pick_version():
     for i, v in enumerate(releases[:15]):
         print(f"    {i+1:>2}. {v['id']}")
     print(f"    也可以直接输入任意版本号(含快照), 如 {c('1.8.8', 'cyan')}")
+    print(f"    {c('0 退出', 'dim')}")
     while True:
         ans = ask("  输入序号或版本号").strip()
+        quit_ans(ans)
         if ans.isdigit() and 1 <= int(ans) <= len(releases[:15]):
             return releases[int(ans) - 1]
         if ans in by_id:
@@ -621,7 +629,9 @@ def pick_server_type():
         ("3", "NeoForge", "1.20.1+ 主流 mod 平台"),
         ("4", "Forge", "老牌 mod 平台, 1.20.1 及以下最成熟"),
     ])
+    print(f"    {c('0 退出', 'dim')}")
     ans = ask("  选择", "1")
+    quit_ans(ans)
     return {"1": "vanilla", "2": "fabric", "3": "neoforge", "4": "forge"}.get(ans, "vanilla")
 
 
@@ -660,6 +670,7 @@ def pick_mod_version(mc_ver, stype):
         print(f"    {i+1}. {v} {mark}")
     while True:
         ans = ask("  选择", "1")
+        quit_ans(ans)
         if ans.isdigit() and 1 <= int(ans) <= len(show):
             return show[int(ans) - 1]
         if ans in vers:
@@ -801,7 +812,8 @@ def start_mod_server(server_dir, cfg, ram):
         run = os.path.join(server_dir, "run.bat")
         return ["cmd", "/c", "run.bat", "nogui"]
     run = os.path.join(server_dir, "run.sh")
-    return ["bash", run, "nogui"]
+    # exec 链: bash → run.sh → java, 减少包装进程
+    return ["bash", "-c", f"exec ./run.sh nogui"]
 
 
 def get_version_info(version):
@@ -1342,8 +1354,11 @@ def do_stop(server_dir):
     if is_running(old["pid"]):
         print(c("优雅关闭超时, 结束进程...", "yellow"))
         try:
-            import signal as _sig
-            os.kill(old["pid"], _sig.SIGTERM)  # Windows 上即 TerminateProcess
+            if IS_WIN:
+                import signal as _sig
+                os.kill(old["pid"], _sig.SIGTERM)  # Windows 上即 TerminateProcess
+            else:
+                os.killpg(old["pid"], 15)  # 杀整个进程组(含 run.sh 包装)
         except (OSError, ImportError):
             pass
         time.sleep(10)
@@ -1354,7 +1369,7 @@ def do_stop(server_dir):
                 import signal as _sig
                 os.kill(old["pid"], _sig.SIGTERM)  # Windows 上即 TerminateProcess
             else:
-                os.kill(old["pid"], 9)  # SIGKILL, 卡死的服务器也必须退出
+                os.killpg(old["pid"], 9)  # SIGKILL 整个进程组, 不残留孤儿
         except (OSError, ImportError):
             pass
     keeper = old.get("keeper")
@@ -1442,6 +1457,7 @@ def pick_difficulty():
     ])
     while True:
         ans = ask("  选择", "3")
+        quit_ans(ans)
         if ans in ("1", "2", "3", "4"):
             return ("peaceful", "easy", "normal", "hard")[int(ans) - 1]
         if ans.lower() in ("peaceful", "easy", "normal", "hard"):
@@ -1475,6 +1491,7 @@ def pick_ram():
     print(f"    也可以直接输入, 如 4G/512M (纯数字按G算)")
     while True:
         ans = ask("  选择", str(len(opts)))
+        quit_ans(ans)
         if ans.isdigit() and 1 <= int(ans) <= len(opts):
             return f"{opts[int(ans) - 1] // 1024}G"
         if re.match(r"^\d+[GM]?$", ans, re.I):
@@ -1496,8 +1513,9 @@ def wizard(server_dir, advanced=False):
 
     if server_dir is None:
         step(2, "选择服务器位置")
-        server_dir = os.path.abspath(
-            ask("  服务器目录", os.path.expanduser(f"~/1b1t-{ver}")))
+        d = ask("  服务器目录", os.path.expanduser(f"~/1b1t-{ver}"))
+        quit_ans(d)
+        server_dir = os.path.abspath(d)
     os.makedirs(server_dir, exist_ok=True)
     print(f"  目录: {c(server_dir, 'green')}")
     if os.listdir(server_dir):
@@ -1506,8 +1524,9 @@ def wizard(server_dir, advanced=False):
     step(3, "选择端口")
     while True:
         port = ask("  端口", "25565")
+        quit_ans(port)
         if not port.isdigit() or not 1 <= int(port) <= 65535:
-            print(c("  端口无效, 请输入 1-65535", "red"))
+            print(c("  端口无效, 请输入 1-65535 (0 退出)", "red"))
             continue
         # 端口占用检测: 被占用自动换空闲端口
         s = socket.socket()
@@ -1814,6 +1833,11 @@ def main_menu():
             return
         if ans == "3":
             if ask_bool(c(f"  确认删除整个目录 {d}? 不可恢复!", "red"), False):
+                # 目录里有服务器在运行则先关闭, 避免删目录后进程变孤儿
+                old = read_pid(d)
+                if old and is_running(old["pid"]):
+                    print(c("  服务器正在运行, 先关闭...", "yellow"))
+                    do_stop(d)
                 shutil.rmtree(d, ignore_errors=True)
                 print(c("已删除", "green"))
             continue
