@@ -13,9 +13,7 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import socket
-import stat
 import subprocess
 import sys
 import time
@@ -27,8 +25,27 @@ CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}"
 BMCL_SERVER_JAR = "https://bmclapi2.bangbang93.com/version/{vid}/server"
-RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/fifo/console.log
-FIFO_NAME = "stdin.fifo"
+RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/console.log
+IS_WIN = (os.name == "nt")
+
+# 控制台 keeper: 持有 java stdin 写端, 监听本地 TCP 转发命令 (Linux/Windows/macOS 通用)
+# 注意: fd0 是管道写端(O_WRONLY), sys.stdin 会初始化失败, 必须用 os.write(0, ...)
+KEEPER_CODE = r"""
+import os, socket, sys
+srv = socket.socket()
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", int(sys.argv[1])))
+srv.listen(4)
+while True:
+    c, _ = srv.accept()
+    data = c.recv(65536).decode("utf-8", "ignore")
+    c.close()
+    for line in data.splitlines():
+        try:
+            os.write(0, (line + "\n").encode())
+        except OSError:
+            sys.exit(0)  # java 已退出, 管道断裂
+"""
 
 # 启动横幅 (figlet standard 字体)
 BANNER = r"""
@@ -224,19 +241,48 @@ def _java_major(java_bin):
 
 
 def detect_javas():
-    """扫描系统已装 Java, 返回 {主版本: [bin路径]}"""
+    """扫描系统已装 Java (Linux/Windows/macOS), 返回 {主版本: [bin路径]}"""
     found = {}
     cands = set()
+    exe = "java.exe" if IS_WIN else "java"
     jh = os.environ.get("JAVA_HOME")
     if jh:
-        cands.add(os.path.join(jh, "bin", "java"))
+        cands.add(os.path.join(jh, "bin", exe))
     for p in shlex.split(os.environ.get("PATH", "")):
-        cands.add(os.path.join(p, "java"))
-    for root in ("/usr/lib/jvm", "/opt/java", "/usr/java",
-                 os.path.expanduser("~/.jdks"), os.path.expanduser("~/sdkman")):
-        if os.path.isdir(root):
-            for entry in os.listdir(root):
-                cands.add(os.path.join(root, entry, "bin", "java"))
+        cands.add(os.path.join(p, exe))
+    if IS_WIN:
+        # Windows: 常见 JDK 安装目录
+        pf = [os.environ.get("ProgramFiles", r"C:\Program Files"),
+              os.environ.get("ProgramFiles(x86)", ""),
+              os.environ.get("ProgramW6432", "")]
+        for root in pf:
+            for sub in ("Java", "Eclipse Adoptium", "Microsoft", "Zulu",
+                        "Amazon Corretto", "BellSoft", "Semeru"):
+                d = os.path.join(root, sub)
+                if os.path.isdir(d):
+                    for entry in os.listdir(d):
+                        cands.add(os.path.join(d, entry, "bin", exe))
+    else:
+        roots = ["/usr/lib/jvm", "/opt/java", "/usr/java",
+                 os.path.expanduser("~/.jdks"), os.path.expanduser("~/sdkman")]
+        if sys.platform == "darwin":  # macOS
+            roots += ["/Library/Java/JavaVirtualMachines",
+                      "/System/Library/Java/JavaVirtualMachines"]
+            # 优先用系统接口查所有 JDK
+            try:
+                out = subprocess.run(["/usr/libexec/java_home", "-V"],
+                                     capture_output=True, text=True, timeout=10).stderr
+                for p in re.findall(r'^\s+(\S+)', out, re.M):
+                    cands.add(os.path.join(p, "Contents", "Home", "bin", "java"))
+            except Exception:
+                pass
+        for root in roots:
+            if os.path.isdir(root):
+                for entry in os.listdir(root):
+                    for cand in (os.path.join(root, entry, "bin", "java"),
+                                 os.path.join(root, entry, "Contents", "Home",
+                                              "bin", "java")):  # macOS 包结构
+                        cands.add(cand)
     for p in sorted(cands):
         if not os.path.isfile(p):
             continue
@@ -247,6 +293,15 @@ def detect_javas():
     return found
 
 
+def java_install_hint(need):
+    """各平台安装 JDK 的提示"""
+    if IS_WIN:
+        return f"下载 JDK {need} 安装包: https://adoptium.net/zh-CN/temurin/"
+    if sys.platform == "darwin":
+        return f"brew install openjdk@{need}"
+    return f"apt install openjdk-{need}-jdk"
+
+
 def pick_java(version):
     """为 MC 版本找匹配的 Java, 找不到则报错退出"""
     need = java_major_for(version)
@@ -255,8 +310,7 @@ def pick_java(version):
         return javas[need][0]
     got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
     sys.exit(c(f"\n[错误] {version} 需要 Java {need}, 本机只有: {got}\n"
-               f"       请安装 JDK {need} 后重试 (如 apt install openjdk-{need}-jdk)",
-               "red"))
+               f"       {java_install_hint(need)}", "red"))
 
 
 # ---------- server.properties ----------
@@ -399,6 +453,20 @@ def read_pid(server_dir):
 
 
 def is_running(pid):
+    """进程存活检测 (Windows 上 os.kill(pid,0) 会误杀进程, 必须用 API)"""
+    if IS_WIN:
+        try:
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            alive = (ctypes.windll.kernel32.GetExitCodeProcess(
+                h, ctypes.byref(code)) and code.value == 259)  # STILL_ACTIVE
+            ctypes.windll.kernel32.CloseHandle(h)
+            return bool(alive)
+        except Exception:
+            return False
     try:
         os.kill(pid, 0)
         return True
@@ -406,34 +474,27 @@ def is_running(pid):
         return False
 
 
-def open_fifo(fifo, timeout=10):
-    """打开 fifo 写端(非阻塞轮询, 避免读端未就绪时死锁)"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
-            os.set_blocking(fd, True)
-            return fd
-        except OSError:
-            time.sleep(0.1)
-    return None
+def free_port():
+    """获取一个随机的本地空闲端口"""
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
 
 def send_console(server_dir, line, timeout=10):
-    """通过 stdin fifo 向服务器控制台发送命令"""
-    fifo = os.path.join(runtime_dir(server_dir), FIFO_NAME)
+    """通过 keeper 的本地 TCP 端口向服务器控制台发送命令"""
+    info = read_pid(server_dir)
+    if not info or not info.get("console_port"):
+        return False
     try:
-        if not stat.S_ISFIFO(os.stat(fifo).st_mode):
-            return False
+        s = socket.create_connection(("127.0.0.1", info["console_port"]), timeout)
+        s.sendall((line + "\n").encode())
+        s.close()
+        return True
     except OSError:
         return False
-    fd = open_fifo(fifo, timeout)
-    if fd is None:
-        return False
-    with os.fdopen(fd, "w") as f:
-        f.write(line + "\n")
-        f.flush()
-    return True
 
 
 def wait_ready(server_dir, timeout=180):
@@ -480,6 +541,43 @@ def parse_ram(ram):
     return n * 1024 if m.group(2) == "G" else n
 
 
+def avail_mem_mb():
+    """可用内存 MB (Linux/Windows/macOS), 失败返回 None"""
+    try:
+        if os.path.exists("/proc/meminfo"):  # Linux
+            with open("/proc/meminfo") as f:
+                m = re.search(r"MemAvailable:\s+(\d+)", f.read())
+            return int(m.group(1)) // 1024 if m else None
+        if IS_WIN:  # Windows: GlobalMemoryStatusEx
+            import ctypes
+
+            class MSX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+            m = MSX()
+            m.dwLength = ctypes.sizeof(m)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
+            return m.ullAvailPhys // 1048576
+        if sys.platform == "darwin":  # macOS: vm.page_free_count
+            free = int(subprocess.run(["sysctl", "-n", "vm.page_free_count"],
+                                      capture_output=True, text=True,
+                                      timeout=10).stdout.strip())
+            pagesz = int(subprocess.run(["sysctl", "-n", "vm.pagesize"],
+                                        capture_output=True, text=True,
+                                        timeout=10).stdout.strip())
+            return free * pagesz // 1048576
+    except Exception:
+        pass
+    return None
+
+
 def diagnose(server_dir, cfg=None):
     """自主排查: 检查 Java/端口/jar/EULA/磁盘/权限/内存/日志, 返回问题数"""
     print(f"\n{c('=== 自主排查 ===', 'bold')}")
@@ -505,7 +603,7 @@ def diagnose(server_dir, cfg=None):
         else:
             got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
             bad(f"MC {cfg['version']} 需要 Java {need}, 本机只有 {got}",
-                f"apt install openjdk-{need}-jdk 或安装 JDK {need}")
+                java_install_hint(need))
 
     # 2. 端口
     if cfg and cfg.get("port"):
@@ -555,10 +653,8 @@ def diagnose(server_dir, cfg=None):
         bad("服务器目录不可写", f"chmod u+w {server_dir}")
 
     # 7. 内存
-    try:
-        with open("/proc/meminfo") as f:
-            m = re.search(r"MemAvailable:\s+(\d+)", f.read())
-        avail_mb = int(m.group(1)) // 1024 if m else 0
+    avail_mb = avail_mem_mb()
+    if avail_mb:
         if cfg and cfg.get("ram"):
             want = parse_ram(cfg["ram"])
             if want and want > avail_mb:
@@ -566,8 +662,6 @@ def diagnose(server_dir, cfg=None):
                     "调小内存上限, 或释放内存后重试")
             else:
                 ok(f"内存可用 {avail_mb}M (配置 {cfg.get('ram', '-')})")
-    except OSError:
-        pass
 
     # 8. 日志错误分析
     rt = runtime_dir(server_dir)
@@ -598,32 +692,32 @@ def diagnose(server_dir, cfg=None):
 # ---------- 开服 ----------
 
 def start_server(server_dir, cfg, wait=True):
-    """按配置启动服务器, 返回 Popen"""
+    """按配置启动服务器, 返回 Popen (Linux/Windows/macOS 通用)"""
     os.makedirs(os.path.join(server_dir, "logs"), exist_ok=True)
     rt = runtime_dir(server_dir)
     os.makedirs(rt, exist_ok=True)
-
-    # stdin fifo (供 console/stop/gamerule 注入)
-    fifo = os.path.join(rt, FIFO_NAME)
-    if os.path.exists(fifo):
-        os.remove(fifo)
-    os.mkfifo(fifo)
 
     java = pick_java(cfg["version"])
     ram = cfg.get("ram", "2G")
     console_log = open(os.path.join(rt, "console.log"), "ab")
 
-    cmd = (f"cd {shlex.quote(server_dir)} && exec {shlex.quote(java)} "
-           f"-Xms512M -Xmx{ram} -jar server.jar nogui < {shlex.quote(fifo)}")
-    p = subprocess.Popen(["bash", "-c", cmd], stdin=subprocess.DEVNULL,
-                         stdout=console_log, stderr=subprocess.STDOUT,
-                         start_new_session=True)
+    flags = {}
+    if IS_WIN:
+        flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        flags["start_new_session"] = True
+    p = subprocess.Popen(
+        [java, "-Xms512M", f"-Xmx{ram}", "-jar", "server.jar", "nogui"],
+        stdin=subprocess.PIPE, stdout=console_log, stderr=subprocess.STDOUT,
+        cwd=server_dir, **flags)
     console_log.close()
-    # 常驻写端: 保证 fifo 永远有 writer, java 的 stdin 不会读到 EOF
+    # keeper: 持有 java stdin 写端 + 监听本地 TCP 转发控制台命令
+    port = free_port()
     keeper = subprocess.Popen(
-        ["bash", "-c", f"exec sleep infinity > {shlex.quote(fifo)}"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, start_new_session=True)
+        [sys.executable, "-c", KEEPER_CODE, str(port)],
+        stdin=p.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        **flags)
+    p.stdin.close()  # 写端只由 keeper 持有, java 永远不会读到 EOF
     time.sleep(1)
     if p.poll() is not None:
         keeper.terminate()
@@ -632,7 +726,8 @@ def start_server(server_dir, cfg, wait=True):
         diagnose(server_dir, cfg)
         sys.exit(1)
     with open(os.path.join(rt, "pid.json"), "w") as f:
-        json.dump({"pid": p.pid, "keeper": keeper.pid, "start": int(time.time())}, f)
+        json.dump({"pid": p.pid, "keeper": keeper.pid, "console_port": port,
+                   "start": int(time.time())}, f)
     save_cfg(server_dir, cfg)
     return p
 
@@ -701,20 +796,29 @@ def do_stop(server_dir):
         while is_running(old["pid"]) and time.time() < deadline:
             time.sleep(1)
     if is_running(old["pid"]):
-        print(c("优雅关闭超时, 发送 SIGTERM...", "yellow"))
-        os.kill(old["pid"], signal.SIGTERM)
+        print(c("优雅关闭超时, 结束进程...", "yellow"))
+        try:
+            import signal as _sig
+            os.kill(old["pid"], _sig.SIGTERM)  # Windows 上即 TerminateProcess
+        except (OSError, ImportError):
+            pass
         time.sleep(10)
     if is_running(old["pid"]):
-        print(c("强制结束 SIGKILL", "red"))
-        os.kill(old["pid"], signal.SIGKILL)
-    keeper = old.get("keeper")
-    if keeper:
+        print(c("强制结束进程", "red"))
         try:
-            os.kill(keeper, signal.SIGTERM)
+            import signal as _sig
+            os.kill(old["pid"], _sig.SIGTERM)
+        except (OSError, ImportError):
+            pass
+    keeper = old.get("keeper")
+    if keeper and is_running(keeper):
+        try:
+            import signal as _sig
+            os.kill(keeper, _sig.SIGTERM)
             time.sleep(1)
             if is_running(keeper):
-                os.kill(keeper, signal.SIGKILL)
-        except OSError:
+                os.kill(keeper, _sig.SIGTERM)
+        except (OSError, ImportError):
             pass
     try:
         os.remove(os.path.join(runtime_dir(server_dir), "pid.json"))
