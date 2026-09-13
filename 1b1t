@@ -340,15 +340,58 @@ def java_install_hint(need):
     return f"apt install openjdk-{need}-jdk"
 
 
+def auto_install_java(need):
+    """自动安装缺失的 JDK, 成功返回 java 路径, 失败返回 None"""
+    print(c(f"  未找到 Java {need}, 尝试自动安装...", "yellow"))
+    try:
+        if IS_WIN:
+            print(c(f"  Windows 请手动下载安装 (装完重开本工具即可): "
+                    f"https://adoptium.net/zh-CN/temurin/ (JDK {need})", "yellow"))
+            return None
+        if sys.platform == "darwin":
+            if shutil.which("brew"):
+                print("  执行: brew install openjdk@" + str(need))
+                subprocess.run(["brew", "install", f"openjdk@{need}"])
+            else:
+                print(c("  未找到 Homebrew, 请先装: https://brew.sh/", "red"))
+                return None
+        else:
+            # Linux: 按发行版选包管理器
+            pms = (("apt", ["sudo", "apt", "install", "-y", f"openjdk-{need}-jdk"]),
+                   ("dnf", ["sudo", "dnf", "install", "-y", f"java-{need}-openjdk"]),
+                   ("pacman", ["sudo", "pacman", "-S", "--noconfirm", f"jdk{need}-openjdk"]))
+            ran = False
+            for pm, cmd in pms:
+                if shutil.which(pm):
+                    print(f"  执行: {' '.join(cmd)}")
+                    subprocess.run(cmd)
+                    ran = True
+                    break
+            if not ran:
+                print(c(f"  未找到 apt/dnf/pacman, 请手动安装: {java_install_hint(need)}", "red"))
+                return None
+        javas = detect_javas()
+        if need in javas:
+            print(c(f"  安装成功: {javas[need][0]}", "green"))
+            return javas[need][0]
+    except Exception as e:
+        print(c(f"  自动安装失败: {e}", "red"))
+    return None
+
+
 def pick_java(version, java_major=None):
-    """为 MC 版本找匹配的 Java (优先官方 javaVersion 字段), 找不到则报错退出"""
+    """为 MC 版本找匹配的 Java (优先官方 javaVersion 字段), 缺则自动安装"""
     need = java_major or java_major_for(version)
     javas = detect_javas()
     if need in javas:
         return javas[need][0]
     got = "、".join(f"Java{k}" for k in sorted(javas)) or "无"
-    sys.exit(c(f"\n[错误] {version} 需要 Java {need}, 本机只有: {got}\n"
-               f"       {java_install_hint(need)}", "red"))
+    print(c(f"\n[提示] {version} 需要 Java {need}, 本机只有: {got}", "yellow"))
+    if sys.stdin.isatty() and ask_bool(f"  自动安装 Java {need}?", True):
+        java = auto_install_java(need)
+        if java:
+            return java
+    sys.exit(c(f"[错误] 缺少 Java {need}, 请手动安装: {java_install_hint(need)}", "red"))
 
 
 # ---------- server.properties ----------
