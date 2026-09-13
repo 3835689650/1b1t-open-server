@@ -1473,9 +1473,23 @@ def wizard(server_dir, advanced=False):
         print(c("  注意: 目录非空, 已有文件不会被覆盖(server.properties 除外)", "yellow"))
 
     step(3, "选择端口")
-    port = ask("  端口", "25565")
-    if not port.isdigit() or not 1 <= int(port) <= 65535:
-        sys.exit(c("[错误] 端口无效", "red"))
+    while True:
+        port = ask("  端口", "25565")
+        if not port.isdigit() or not 1 <= int(port) <= 65535:
+            print(c("  端口无效, 请输入 1-65535", "red"))
+            continue
+        # 端口占用检测: 被占用自动换空闲端口
+        s = socket.socket()
+        try:
+            s.bind(("0.0.0.0", int(port)))
+            s.close()
+            break
+        except OSError:
+            free = free_port()
+            print(c(f"  端口 {port} 已被占用(有服务器在跑), 自动改用空闲端口 {free}",
+                    "yellow"))
+            port = str(free)
+            break
 
     props = {"server-port": port}
     keep = False
