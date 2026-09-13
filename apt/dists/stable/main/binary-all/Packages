@@ -4,10 +4,10 @@ Architecture: all
 Maintainer: 1b1t <3835689650@users.noreply.github.com>
 Depends: python3
 Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.11_all.deb
-Size: 21368
-MD5sum: a290c1f5ff403652901e71030cf56a0f
-SHA1: 7408ec7596312da4f982b28157c657fba7942caa
-SHA256: a4d88d2352e496c3db98877e675d8db07f3a7dcf87e2ef0d894aa4ccdf88b9cf
+Size: 21380
+MD5sum: 5a4beeaa32aa0a571706eb03e87e28c9
+SHA1: 000efb593ead29bf741b7ede0a9f374d251b1743
+SHA256: 8910706d2438f2876ce79cc27d751d838cb09f868152abc9d1d0ce879ce32f42
 Section: utils
 Priority: optional
 Homepage: https://openmcserver.cn/1b1t/
