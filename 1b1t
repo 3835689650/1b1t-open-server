@@ -223,18 +223,23 @@ def dw(s):
     return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
 
 
-def version_table():
-    """打印版本优点/缺点/最低配置表格"""
-    rows = [("版本", "优点", "缺点", "最低配置")] + [list(r) for r in VERSION_INFO]
-    widths = [max(dw(r[i]) for r in rows) + 2 for i in range(4)]
-    line = "  +" + "+".join("-" * w for w in widths) + "+"
+def print_table(rows, indent="  "):
+    """打印表格, rows 首行为表头 (自动处理中文宽度)"""
+    widths = [max(dw(str(r[i])) for r in rows) + 2 for i in range(len(rows[0]))]
+    line = indent + "+" + "+".join("-" * w for w in widths) + "+"
     print(line)
     for i, r in enumerate(rows):
-        print("  |" + "|".join(" " + r[j] + " " * (widths[j] - dw(r[j]) - 1)
-                               for j in range(4)) + "|")
+        print(indent + "|" + "|".join(
+            " " + str(r[j]) + " " * (widths[j] - dw(str(r[j])) - 1)
+            for j in range(len(r))) + "|")
         if i == 0:
             print(line)
     print(line)
+
+
+def version_table():
+    """打印版本优点/缺点/最低配置表格"""
+    print_table([("版本", "优点", "缺点", "最低配置")] + [list(r) for r in VERSION_INFO])
 
 
 def pick_version():
@@ -911,7 +916,24 @@ def wizard(server_dir):
     props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
     keep = ask_bool("  死亡不掉落", False)
     props["motd"] = ask("  MOTD(服务器名)", "1b1t Server")
-    props["difficulty"] = ask("  难度 easy/normal/hard/peaceful", "normal")
+    # 难度: 中文表格 + 数字选择
+    print(c("  难度(数字选择):", "cyan"))
+    print_table([
+        ("编号", "难度", "说明"),
+        ("1", "和平", "无怪物, 饥饿不减少, 适合纯建筑"),
+        ("2", "简单", "怪物弱, 饥饿不掉到10心以下"),
+        ("3", "普通", "标准体验(默认)"),
+        ("4", "困难", "怪物强, 饥饿可致死, 僵尸破门"),
+    ])
+    while True:
+        ans = ask("  选择", "3")
+        if ans in ("1", "2", "3", "4"):
+            props["difficulty"] = ("peaceful", "easy", "normal", "hard")[int(ans) - 1]
+            break
+        if ans.lower() in ("peaceful", "easy", "normal", "hard"):
+            props["difficulty"] = ans.lower()
+            break
+        print(c("  请输入 1-4 或英文难度名", "red"))
     props["max-players"] = ask("  最大玩家数", "20")
     props["view-distance"] = ask("  视距", "10")
     props["white-list"] = str(ask_bool("  白名单", False)).lower()
