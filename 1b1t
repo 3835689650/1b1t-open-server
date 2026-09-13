@@ -32,12 +32,24 @@ IS_WIN = (os.name == "nt")
 # 控制台 keeper: 持有 java stdin 写端, 监听本地 TCP 转发命令 (Linux/Windows/macOS 通用)
 # 注意: fd0 是管道写端(O_WRONLY), sys.stdin 会初始化失败, 必须用 os.write(0, ...)
 KEEPER_CODE = r"""
-import os, socket, sys
+import os, select, socket, sys
 srv = socket.socket()
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", int(sys.argv[1])))
 srv.listen(4)
+try:  # Linux/macOS: poll 管道写端, java 退出(读端关闭)时 POLLERR 触发自杀
+    poller = select.poll()
+    poller.register(0, select.POLLERR | select.POLLHUP)
+except (AttributeError, OSError):
+    poller = None
 while True:
+    r, _, _ = select.select([srv], [], [], 1)
+    if poller is not None:
+        for _fd, ev in poller.poll(0):
+            if ev & (select.POLLERR | select.POLLHUP):
+                sys.exit(0)  # java 已退出, 管道断裂
+    if not r:
+        continue
     c, _ = srv.accept()
     data = c.recv(65536).decode("utf-8", "ignore")
     c.close()
@@ -990,8 +1002,11 @@ def do_stop(server_dir):
     if is_running(old["pid"]):
         print(c("强制结束进程", "red"))
         try:
-            import signal as _sig
-            os.kill(old["pid"], _sig.SIGTERM)
+            if IS_WIN:
+                import signal as _sig
+                os.kill(old["pid"], _sig.SIGTERM)  # Windows 上即 TerminateProcess
+            else:
+                os.kill(old["pid"], 9)  # SIGKILL, 卡死的服务器也必须退出
         except (OSError, ImportError):
             pass
     keeper = old.get("keeper")
@@ -999,9 +1014,12 @@ def do_stop(server_dir):
         try:
             import signal as _sig
             os.kill(keeper, _sig.SIGTERM)
-            time.sleep(1)
+            for _ in range(10):
+                time.sleep(0.5)
+                if not is_running(keeper):
+                    break
             if is_running(keeper):
-                os.kill(keeper, _sig.SIGTERM)
+                os.kill(keeper, _sig.SIGTERM)  # Windows 上即 TerminateProcess
         except (OSError, ImportError):
             pass
     try:
