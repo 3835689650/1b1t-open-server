@@ -26,6 +26,40 @@ import urllib.request
 MIRROR_DIR = os.path.expanduser("~/1b1t-mirror")
 # 镜像的 HTTP 出口 (openmcserver.cn/serverdown, 其他机器走隧道下载)
 MIRROR_HTTP = "https://openmcserver.cn/serverdown/"
+# 软件设置文件 (settings 子命令修改)
+SETTINGS_FILE = os.path.expanduser("~/.config/1b1t-open-server/settings.json")
+SETTING_DEFAULTS = {
+    "online_mode": "true", "difficulty": "normal", "motd": "1b1t Server",
+    "keep_inventory": "false", "mirror_dir": "", "mirror_http": "",
+}
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE) as f:
+            s = json.load(f)
+        d = dict(SETTING_DEFAULTS)
+        d.update(s)
+        return d
+    except (OSError, ValueError):
+        return dict(SETTING_DEFAULTS)
+
+
+def save_settings(s):
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(s, f, ensure_ascii=False, indent=2)
+
+
+def mirror_dir():
+    """镜像目录 (可在软件设置里改)"""
+    st = load_settings()
+    return os.path.expanduser(st.get("mirror_dir") or MIRROR_DIR)
+
+
+def mirror_http():
+    st = load_settings()
+    return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
@@ -156,7 +190,7 @@ PROPS = [
 def c(text, color="0"):
     """着色输出"""
     codes = {"red": "31", "green": "32", "yellow": "33", "blue": "34",
-             "cyan": "36", "bold": "1"}
+             "cyan": "36", "bold": "1", "dim": "2"}
     if not sys.stdout.isatty():
         return text
     return f"\033[{codes.get(color, '0')}m{text}\033[0m"
@@ -463,7 +497,7 @@ def _sha1(path):
 def _mirror_path(url):
     """URL → 本地镜像文件路径 (域名/路径 结构)"""
     p = urllib.parse.urlparse(url)
-    return os.path.join(MIRROR_DIR, p.netloc, p.path.lstrip("/"))
+    return os.path.join(mirror_dir(), p.netloc, p.path.lstrip("/"))
 
 
 def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False):
@@ -531,10 +565,10 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
     # 本机文件镜像与 serverdown 是同一份数据(bind mount), 文件未命中则 serverdown 也没有,
     # 直接走官方源; 其他机器(无本机镜像目录)先试 serverdown 隧道镜像
     # 注意 serverdown 路径必须含域名段(与镜像物理结构一致), 否则永远 404
-    if os.path.isdir(MIRROR_DIR):
+    if os.path.isdir(mirror_dir()):
         net_urls = list(urls)
     else:
-        net_urls = [MIRROR_HTTP + os.path.relpath(_mirror_path(u), MIRROR_DIR)
+        net_urls = [mirror_http() + os.path.relpath(_mirror_path(u), mirror_dir())
                     for u in urls] + list(urls)
     for u in net_urls:
         if _fetch_one(u, dest, expect_sha1, expect_size):
@@ -1215,11 +1249,11 @@ def start_server(server_dir, cfg, wait=True):
     return p
 
 
-def do_start(server_dir, dry_run=False):
+def do_start(server_dir, dry_run=False, advanced=False):
     """start: 有配置直接开, 无配置走向导 (server_dir=None 时向导里选位置)"""
     cfg = load_cfg(server_dir) if server_dir else None
     if cfg is None:
-        cfg = wizard(server_dir)
+        cfg = wizard(server_dir, advanced=advanced)
         server_dir = cfg.pop("dir")
     else:
         print(c(f"已找到配置: MC {cfg['version']} 端口 {cfg['port']} "
@@ -1417,8 +1451,10 @@ def pick_ram():
         print(c("  无效, 请输入序号或如 4G/512M", "red"))
 
 
-def wizard(server_dir):
-    """交互式向导, 返回配置 dict(含 dir 字段)"""
+def wizard(server_dir, advanced=False):
+    """交互式向导, 返回配置 dict(含 dir 字段)
+    简单模式(默认): 只问版本/类型/目录/端口 4 项, 无任何 y/n 询问, 直接开服
+    高级模式(--advanced): 逐项询问 11 项配置 + 全项编辑 + 确认"""
     print(c(BANNER, "cyan"))
 
     ver = pick_version()["id"]
@@ -1441,23 +1477,20 @@ def wizard(server_dir):
     if not port.isdigit() or not 1 <= int(port) <= 65535:
         sys.exit(c("[错误] 端口无效", "red"))
 
-    step(4, "配置 (回车=默认)")
-    print(c("  配置模式:", "cyan"))
-    print_table([
-        ("模式", "说明"),
-        ("1 简单", "不询问, 全部用默认值直接开 (新手推荐)"),
-        ("2 高级", "逐项询问 11 项配置 + server.properties 全项编辑"),
-    ])
-    mode = ask("  选择", "1")
     props = {"server-port": port}
     keep = False
-    if mode == "1":  # 简单: 不询问, 全部默认 (正版验证开/普通难度/自动内存)
-        props["online-mode"] = "true"
-        props["motd"] = "1b1t Server"
-        props["difficulty"] = "normal"
+    if not advanced:  # 简单: 4 项重要选择后零询问, 用软件设置里的默认值直接开
+        st = load_settings()
+        props["online-mode"] = st["online_mode"]
+        props["motd"] = st["motd"]
+        props["difficulty"] = st["difficulty"]
+        keep = st["keep_inventory"] == "true"
         ram = default_ram()
-        print(c(f"  使用默认配置: 正版验证开 · 普通难度 · 内存 {ram} (自动)", "cyan"))
-    else:  # 高级: 全部 11 项 + 全项编辑
+        print(c(f"  默认配置: 正版验证{'开' if props['online-mode'] == 'true' else '关'}"
+                f" · {props['difficulty']}难度 · 死亡掉落{'开' if keep else '关'}"
+                f" · 内存 {ram} (自动)", "cyan"))
+    else:  # 高级: 逐项询问 11 项 + 全项编辑 + 确认
+        step(4, "配置")
         props["online-mode"] = str(ask_bool("  正版验证", True)).lower()
         props["enable-command-block"] = str(ask_bool("  命令方块", False)).lower()
         keep = ask_bool("  死亡不掉落", False)
@@ -1477,13 +1510,13 @@ def wizard(server_dir):
     if keep:
         cfg["gamerules"]["keepInventory"] = "true"
 
-    step(5, "确认")
     type_desc = stype + (f" {mod_version}" if mod_version else "")
     print(f"  类型: {c(type_desc, 'green')}    MC 版本: {c(ver, 'green')}    "
           f"端口: {c(port, 'green')}    内存: {c(ram, 'green')}")
     print(f"  目录: {c(server_dir, 'green')}")
-    if not ask_bool("  确认开服?", True):
-        sys.exit("已取消")
+    if advanced:
+        if not ask_bool("  确认开服?", True):
+            sys.exit("已取消")
     return cfg
 
 
@@ -1513,7 +1546,7 @@ def do_mirror(versions):
     """预取安装包到镜像目录 (serverdown 直接可见)
     无参数 = 全部正式版 vanilla + 全部 NeoForge/Forge 安装器 + Fabric 安装器"""
     from concurrent.futures import ThreadPoolExecutor
-    print(c(f"镜像目录: {MIRROR_DIR}", "cyan"))
+    print(c(f"镜像目录: {mirror_dir()}", "cyan"))
     releases = [v["id"] for v in load_manifest(force=True)
                 if v["type"] == "release"]
     if versions:
@@ -1577,7 +1610,78 @@ def do_mirror(versions):
     if failed:
         print(c(f"  失败 {len(failed)} 个: {', '.join(failed[:8])}{'...' if len(failed) > 8 else ''}",
                 "red"))
-    print(c(f"\n完成! 镜像已在 serverdown 可见: {MIRROR_HTTP}", "green"))
+    print(c(f"\n完成! 镜像已在 serverdown 可见: {mirror_http()}", "green"))
+
+
+def do_config(server_dir):
+    """修改服务器设置: 编辑已有服务器的 server.properties 全部项"""
+    cfg = load_cfg(server_dir)
+    if not cfg:
+        sys.exit(c(f"[错误] 没有找到配置: {server_dir}", "red"))
+    print(c(f"编辑服务器配置: {server_dir}", "cyan"))
+    props = dict(cfg["props"])
+    advanced_editor(props)
+    cfg["props"] = props
+    save_cfg(server_dir, cfg)
+    with open(os.path.join(server_dir, "server.properties"), "w") as f:
+        f.write(render_properties(props))
+    print(c("已保存 server.properties", "green"))
+    old = read_pid(server_dir)
+    if old and is_running(old["pid"]):
+        print(c(f"服务器正在运行, 重启后生效: 1b1t restart {server_dir}", "yellow"))
+    return 0
+
+
+def do_settings():
+    """软件设置: 默认配置值 / 镜像目录 / 镜像 HTTP 地址"""
+    st = load_settings()
+    print(c("[软件设置]", "bold"))
+    print(c("  修改后新开服务器(简单模式)会使用这些默认值", "dim"))
+    items = [
+        ("1", "默认正版验证", st["online_mode"], "true/false"),
+        ("2", "默认难度", st["difficulty"], "peaceful/easy/normal/hard"),
+        ("3", "默认MOTD", st["motd"], "服务器显示名"),
+        ("4", "默认死亡不掉落", st["keep_inventory"], "true/false"),
+        ("5", "镜像目录", st.get("mirror_dir") or "(默认 ~/1b1t-mirror)",
+         "留空=恢复默认"),
+        ("6", "镜像HTTP地址", st.get("mirror_http") or MIRROR_HTTP,
+         "其他机器的下载入口"),
+    ]
+    while True:
+        print()
+        print_table([("编号", "设置项", "当前值", "说明")] + items)
+        ans = ask("  修改 (编号 值, 回车结束)", "")
+        if ans == "":
+            break
+        m = re.match(r"(\d)\s+(.*)", ans)
+        if not m:
+            print(c("  格式: 编号 值, 如: 2 hard", "red"))
+            continue
+        i = int(m.group(1)) - 1
+        if not 0 <= i < len(items):
+            print(c("  编号无效", "red"))
+            continue
+        key = ("online_mode", "difficulty", "motd", "keep_inventory",
+               "mirror_dir", "mirror_http")[i]
+        val = m.group(2).strip()
+        if key in ("online_mode", "keep_inventory"):
+            val = str(val.lower() in ("true", "y", "yes", "1")).lower()
+        if key == "mirror_dir":
+            val = "" if val == "默认" else val
+        st[key] = val
+        items = [
+            ("1", "默认正版验证", st["online_mode"], "true/false"),
+            ("2", "默认难度", st["difficulty"], "peaceful/easy/normal/hard"),
+            ("3", "默认MOTD", st["motd"], "服务器显示名"),
+            ("4", "默认死亡不掉落", st["keep_inventory"], "true/false"),
+            ("5", "镜像目录", st.get("mirror_dir") or "(默认 ~/1b1t-mirror)",
+             "留空=恢复默认"),
+            ("6", "镜像HTTP地址", st.get("mirror_http") or MIRROR_HTTP,
+             "其他机器的下载入口"),
+        ]
+        save_settings(st)
+        print(c("已保存", "green"))
+    return 0
 
 
 def find_servers():
@@ -1658,8 +1762,11 @@ def usage():
   status <目录>      查看状态
   doctor <目录>      自主排查问题(开服失败时也会自动运行)
   console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
+  config <目录>        修改服务器设置(编辑 server.properties 全部项)
+  settings             软件设置(默认配置/镜像目录/镜像HTTP地址)
   mirror [版本...]     预取安装包到本地镜像 ~/1b1t-mirror (之后开服不走网络)
-  其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)""")
+  其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)
+        --advanced 高级向导(逐项询问 11 项配置+全项编辑); 默认简单模式零询问""")
 
 
 def main():
@@ -1671,12 +1778,15 @@ def main():
     cmd = "start"
     server_dir = None
     dry_run = "--dry-run" in args
-    args = [a for a in args if a != "--dry-run"]
+    advanced = "--advanced" in args
+    args = [a for a in args if a not in ("--dry-run", "--advanced")]
     if args and args[0] in ("start", "stop", "restart", "status", "doctor",
-                            "console", "mirror"):
+                            "console", "mirror", "config", "settings"):
         cmd = args.pop(0)
     if cmd == "mirror":
         return do_mirror(args)
+    if cmd == "settings":
+        return do_settings()
     if args and not args[0].startswith("-"):
         server_dir = os.path.abspath(args.pop(0))
         if cmd == "console" and args:
@@ -1689,14 +1799,14 @@ def main():
         if len(sys.argv) == 1:
             main_menu()
             return 0
-        do_start(None, dry_run=dry_run)
+        do_start(None, dry_run=dry_run, advanced=advanced)
         return 0
 
     if server_dir is None:
         server_dir = os.getcwd()
 
     if cmd == "start":
-        do_start(server_dir, dry_run=dry_run)
+        do_start(server_dir, dry_run=dry_run, advanced=advanced)
     elif cmd == "stop":
         do_stop(server_dir)
     elif cmd == "restart":
@@ -1706,6 +1816,8 @@ def main():
         do_status(server_dir)
     elif cmd == "doctor":
         do_doctor(server_dir)
+    elif cmd == "config":
+        do_config(server_dir)
     return 0
 
 
