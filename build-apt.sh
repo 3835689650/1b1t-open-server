@@ -128,8 +128,11 @@ def render(ver, date, body):
     return "\n".join(html)
 rendered = "\n".join(render(*e) for e in entries[:3])
 page = open(site).read()
-assert "<!-- CHANGELOG -->" in page, "官网缺少 <!-- CHANGELOG --> 标记"
-open(site, "w").write(page.replace("<!-- CHANGELOG -->", rendered))
+pat = r"<!-- CHANGELOG_START -->.*?<!-- CHANGELOG_END -->"
+assert re.search(pat, page, re.S), "官网缺少 CHANGELOG_START/END 标记"
+open(site, "w").write(re.sub(
+    pat, "<!-- CHANGELOG_START -->\n" + rendered + "\n  <!-- CHANGELOG_END -->",
+    page, flags=re.S))
 print("  已注入最新 3 个版本条目")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
