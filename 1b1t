@@ -1693,12 +1693,13 @@ def do_settings():
     while True:
         print()
         print_table([("编号", "设置项", "当前值", "说明")] + items)
-        ans = ask("  修改 (编号 值, 回车结束)", "")
-        if ans == "":
+        print(c("  修改: 输入 '编号 值' (如 2 hard), 输入 0 退出", "yellow"))
+        ans = ask("  修改", "")
+        if ans in ("", "0"):
             break
         m = re.match(r"(\d)\s+(.*)", ans)
         if not m:
-            print(c("  格式: 编号 值, 如: 2 hard", "red"))
+            print(c("  格式: 编号 值, 如: 2 hard; 0 退出", "red"))
             continue
         i = int(m.group(1)) - 1
         if not 0 <= i < len(items):
@@ -1758,8 +1759,9 @@ def main_menu():
         print("  2. 启动服务器 (已有服务器)")
         print("  3. 删除服务器")
         print("  4. 查看状态")
-        print("  5. 软件设置")
-        print("  6. 强制杀死进程 (不保存世界)")
+        print("  5. 修改服务器设置 (server.properties)")
+        print("  6. 软件设置")
+        print("  7. 强制杀死进程 (不保存世界)")
         print("  0. 退出")
         ans = ask("  选择", "1")
         if ans == "1":
@@ -1767,10 +1769,10 @@ def main_menu():
             return
         if ans == "0":
             sys.exit(0)
-        if ans == "5":
+        if ans == "6":
             do_settings()
             continue
-        if ans not in ("2", "3", "4", "6"):
+        if ans not in ("2", "3", "4", "5", "7"):
             print(c("  无效选择", "red"))
             continue
         if not servers:
@@ -1797,7 +1799,10 @@ def main_menu():
         if ans == "4":
             do_status(d)
             continue
-        if ans == "6":
+        if ans == "5":
+            do_config(d)
+            continue
+        if ans == "7":
             if ask_bool(c(f"  确认强制杀死 {d}? 不会保存世界!", "red"), False):
                 do_kill(d)
             continue
