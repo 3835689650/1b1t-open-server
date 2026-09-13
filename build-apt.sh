@@ -35,32 +35,89 @@ Description: Minecraft 一键开服工具 (1b1t)
 EOF
 dpkg-deb --root-owner-group -b "$WORK/deb" "$WORK/1b1t-open-server_${VER}_all.deb"
 
-# Windows / macOS 版 (脚本 + 启动器)
+# Windows / macOS 版 (脚本 + 一键安装: 装完终端直接输 1b1t)
 mkdir -p "$WORK/win/1b1t-open-server" "$WORK/mac"
 cp "$ROOT/1b1t" "$WORK/win/1b1t-open-server/1b1t.py"
 cp "$ROOT/1b1t" "$WORK/mac/1b1t"
 chmod +x "$WORK/mac/1b1t"
-cat > "$WORK/win/1b1t-open-server/启动服务器.bat" <<'EOF'
+# Windows: 安装.bat 装到 Python Scripts 目录(在 PATH), 之后终端输入 1b1t 启动
+cat > "$WORK/win/1b1t-open-server/安装.bat" <<'EOF'
 @echo off
 chcp 65001 >nul
-python 1b1t.py %*
-if errorlevel 1 pause
+echo ===== 1b1t 一键安装 =====
+for /f "delims=" %%i in ('python -c "import sys,os;print(os.path.dirname(sys.executable))"') do set PYDIR=%%i
+if not exist "%PYDIR%\Scripts" mkdir "%PYDIR%\Scripts"
+copy /y "%~dp01b1t.py" "%PYDIR%\Scripts\1b1t.py" >nul
+> "%PYDIR%\Scripts\1b1t.bat" echo @echo off
+>> "%PYDIR%\Scripts\1b1t.bat" echo python "%PYDIR%\Scripts\1b1t.py" %%*
+echo.
+echo 安装完成! 重新打开终端, 输入 1b1t 即可启动
+echo (如果提示找不到命令, 请确认 Python 安装时勾选了 Add to PATH)
+pause
 EOF
 cat > "$WORK/win/1b1t-open-server/安装说明.txt" <<'EOF'
 1b1t-open-server Windows 版
 
 1. 安装 Python 3.8+: https://www.python.org/downloads/
    (安装时勾选 "Add Python to PATH")
-2. 双击 "启动服务器.bat" 开始使用
-3. 完整说明: https://www.1b1t.cn/
+2. 双击 "安装.bat" 一键安装
+3. 重新打开终端(CMD/PowerShell), 输入 1b1t 启动
+4. 完整说明: https://www.1b1t.cn/
+EOF
+# macOS: install.sh 装到 /usr/local/bin, 之后终端输入 1b1t 启动
+cat > "$WORK/mac/install.sh" <<'EOF'
+#!/bin/bash
+# 1b1t 一键安装 (macOS)
+set -e
+D=/usr/local/bin
+if [ ! -w "$D" ]; then sudo mkdir -p "$D"; sudo cp 1b1t "$D/1b1t"; sudo chmod +x "$D/1b1t"
+else cp 1b1t "$D/1b1t"; chmod +x "$D/1b1t"; fi
+echo "安装完成! 重新打开终端, 输入 1b1t 即可启动"
+EOF
+chmod +x "$WORK/mac/install.sh"
+cat > "$WORK/mac/安装说明.txt" <<'EOF'
+1b1t-open-server macOS 版
+
+1. 安装 Python 3: brew install python3
+2. 终端运行: ./install.sh 一键安装
+3. 重新打开终端, 输入 1b1t 启动
+4. 完整说明: https://www.1b1t.cn/
 EOF
 (cd "$WORK/win" && zip -qr "$WORK/1b1t-open-server_${VER}_windows.zip" 1b1t-open-server)
-(cd "$WORK/mac" && tar czf "$WORK/1b1t-open-server_${VER}_macos.tar.gz" 1b1t)
+(cd "$WORK/mac" && tar czf "$WORK/1b1t-open-server_${VER}_macos.tar.gz" 1b1t install.sh 安装说明.txt)
 
-# 三平台包汇总到 download/ 目录
+# amd64 独立二进制 (免 Python, 单文件直接跑)
+mkdir -p "$WORK/amd64/1b1t-open-server"
+python3 -m PyInstaller --onefile --name 1b1t --distpath "$WORK/dist" \
+    --workpath "$WORK/pyi" "$ROOT/1b1t" >/dev/null 2>&1 \
+    || { pip3 install --break-system-packages pyinstaller >/dev/null 2>&1; \
+         python3 -m PyInstaller --onefile --name 1b1t --distpath "$WORK/dist" \
+             --workpath "$WORK/pyi" "$ROOT/1b1t" >/dev/null 2>&1; }
+cp "$WORK/dist/1b1t" "$WORK/amd64/1b1t-open-server/1b1t"
+cat > "$WORK/amd64/1b1t-open-server/install.sh" <<'EOF'
+#!/bin/bash
+# 1b1t 一键安装 (amd64 独立版, 免 Python)
+set -e
+D=/usr/local/bin
+if [ ! -w "$D" ]; then sudo mkdir -p "$D"; sudo cp 1b1t "$D/1b1t"; sudo chmod +x "$D/1b1t"
+else cp 1b1t "$D/1b1t"; chmod +x "$D/1b1t"; fi
+echo "安装完成! 重新打开终端, 输入 1b1t 即可启动"
+EOF
+chmod +x "$WORK/amd64/1b1t-open-server/install.sh"
+cat > "$WORK/amd64/1b1t-open-server/安装说明.txt" <<'EOF'
+1b1t-open-server amd64 独立版 (免安装 Python)
+
+1. 解压后运行: ./install.sh 一键安装
+2. 重新打开终端, 输入 1b1t 即可启动 (arm64 机器请用 deb 包)
+3. 完整说明: https://www.1b1t.cn/
+EOF
+(cd "$WORK/amd64" && tar czf "$WORK/1b1t-open-server_${VER}_amd64.tar.gz" 1b1t-open-server)
+
+# 平台包汇总到 download/ 目录 (deb 为 all 架构, 支持 amd64/arm64)
 mkdir -p "$ROOT/download"
 cp "$WORK/1b1t-open-server_${VER}_windows.zip" "$ROOT/download/"
 cp "$WORK/1b1t-open-server_${VER}_macos.tar.gz" "$ROOT/download/"
+cp "$WORK/1b1t-open-server_${VER}_amd64.tar.gz" "$ROOT/download/"
 cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/download/"
 
 echo "==> 2/5 生成 APT 仓库索引 (保留所有历史版本 deb)"
