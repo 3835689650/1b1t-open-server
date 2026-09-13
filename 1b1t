@@ -1679,10 +1679,10 @@ def do_mirror(versions):
     except Exception as e:
         print(c(f"  fabric 列表获取失败: {e}", "yellow"))
 
-    print(f"  共 {len(jobs)} 个文件, 3 线程并发下载...")
+    print(f"  共 {len(jobs)} 个文件, 30 线程并发下载...")
     done = 0
     failed = []
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=30) as ex:
         for r in ex.map(_mirror_download, jobs):
             done += 1
             if r:
