@@ -5,8 +5,8 @@ Minecraft 一键开服 CLI 工具。
 ## 安装
 
 ```bash
-curl -fsSL https://openmcserver.cn/1b1t/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null
-echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://openmcserver.cn/1b1t-apt/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list
+curl -fsSL https://www.1b1t.cn/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://www.1b1t.cn/1b1t-apt/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list
 sudo apt update && sudo apt install 1b1t-open-server
 ```
 
