@@ -138,7 +138,18 @@ else
     echo "  未找到官网源码, 跳过 ($SITE_SRC)"
 fi
 
+echo "==> 6/6 同步 apt 仓库到官网(国内主源)"
+APT_DST="/www/wwwroot/openmcserver.cn/1b1t-apt"
+if [ -d "$(dirname "$APT_DST")" ]; then
+    sudo mkdir -p "$APT_DST"
+    sudo cp -r "$ROOT"/apt/. "$APT_DST"/
+    sudo chown -R www:www "$APT_DST"
+    echo "  已同步: https://openmcserver.cn/1b1t-apt/"
+else
+    echo "  未找到站点目录, 跳过"
+fi
+
 echo "完成! 安装方法:"
-echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
-echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://raw.githubusercontent.com/$REPO/gh-pages/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
+echo "  curl -fsSL https://openmcserver.cn/1b1t/1b1t-apt-key.gpg | sudo tee /etc/apt/keyrings/1b1t.gpg >/dev/null"
+echo "  echo 'deb [signed-by=/etc/apt/keyrings/1b1t.gpg] https://openmcserver.cn/1b1t-apt/ stable main' | sudo tee /etc/apt/sources.list.d/1b1t.list"
 echo "  sudo apt update && sudo apt install 1b1t-open-server"
