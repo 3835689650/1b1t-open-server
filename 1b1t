@@ -1753,21 +1753,101 @@ def do_mirror(versions):
 
 
 def do_config(server_dir):
-    """修改服务器设置: 编辑已有服务器的 server.properties 全部项"""
+    """修改服务器设置: 内存/端口/人数/全部项, 改完保存并提示重启生效"""
     cfg = load_cfg(server_dir)
     if not cfg:
         sys.exit(c(f"[错误] 没有找到配置: {server_dir}", "red"))
-    print(c(f"编辑服务器配置: {server_dir}", "cyan"))
     props = dict(cfg["props"])
-    advanced_editor(props)
-    cfg["props"] = props
-    save_cfg(server_dir, cfg)
-    with open(os.path.join(server_dir, "server.properties"), "w") as f:
-        f.write(render_properties(props))
-    print(c("已保存 server.properties", "green"))
-    old = read_pid(server_dir)
-    if old and is_running(old["pid"]):
-        print(c(f"服务器正在运行, 重启后生效: 1b1t restart {server_dir}", "yellow"))
+    while True:
+        port_now = str(cfg.get("port") or props.get("server-port", "25565"))
+        print(c(f"\n[修改服务器设置] {server_dir}", "cyan"))
+        print(c(f"  当前: 端口 {port_now} · 内存 {cfg.get('ram', '?')} · "
+                f"人数 {props.get('max-players', '20')}", "dim"))
+        print(f"  1. 内存上限      = {c(cfg.get('ram', '?'), 'green')}")
+        print(f"  2. 端口          = {c(port_now, 'green')}")
+        print(f"  3. 最大人数      = {c(props.get('max-players', '20'), 'green')}")
+        print(f"  4. 高级选项(编辑全部项)")
+        print(c("  输入 1-4 修改, 0 退出", "yellow"))
+        ans = ask("  修改")
+        changed = False
+        if ans in ("", "0"):
+            break
+        if ans == "1":
+            # 内存: 空闲70%以下档位, 可自定义, 0 取消 (不改动)
+            total = total_mem_mb()
+            avail = avail_mem_mb()
+            cap = int((avail or 2048) * 0.7)
+            tiers = [1024, 2048, 4096, 8192, 16384, 32768, 65536]
+            opts = [t for t in tiers if t <= cap][-4:] or [1024]
+            info = ""
+            if total and avail:
+                info = f"整机{total // 1024}G 空闲{avail // 1024}G"
+            print(c(f"  内存上限 {info} (最大建议 = 空闲70%):", "cyan"))
+            for i, t in enumerate(opts):
+                mark = c("(推荐)", "green") if i == len(opts) - 1 else ""
+                print(f"    {i+1}. {t // 1024}G {mark}")
+            print("    也可以直接输入, 如 4G/512M (纯数字按G算, 0 取消)")
+            while True:
+                a = ask("  选择", str(len(opts)))
+                if a == "0":
+                    break
+                if a.isdigit() and 1 <= int(a) <= len(opts):
+                    cfg["ram"] = f"{opts[int(a) - 1] // 1024}G"
+                    changed = True
+                    break
+                if re.match(r"^\d+[GM]?$", a, re.I):
+                    cfg["ram"] = a.upper() + ("G" if not re.search(r"[GM]", a, re.I) else "")
+                    changed = True
+                    break
+                print(c("  无效, 请输入序号或如 4G/512M (0 取消)", "red"))
+        elif ans == "2":
+            while True:
+                port = ask("  新端口", port_now)
+                if port == "0":
+                    break
+                if not port.isdigit() or not 1 <= int(port) <= 65535:
+                    print(c("  端口无效, 请输入 1-65535 (0 取消)", "red"))
+                    continue
+                # 端口占用检测: 被占用自动换空闲端口
+                s = socket.socket()
+                try:
+                    s.bind(("0.0.0.0", int(port)))
+                    s.close()
+                except OSError:
+                    free = free_port()
+                    print(c(f"  端口 {port} 已被占用(有服务器在跑), 自动改用空闲端口 {free}",
+                            "yellow"))
+                    port = str(free)
+                cfg["port"] = int(port)
+                props["server-port"] = port
+                changed = True
+                break
+        elif ans == "3":
+            while True:
+                n = ask("  最大人数", str(props.get("max-players", "20")))
+                if n == "0":
+                    break
+                if n.isdigit() and 1 <= int(n) <= 100000:
+                    props["max-players"] = n
+                    changed = True
+                    break
+                print(c("  无效, 请输入正整数 (0 取消)", "red"))
+        elif ans == "4":
+            advanced_editor(props)
+            changed = True
+        else:
+            print(c("  输入 1-4 修改, 0 退出", "red"))
+            continue
+        if not changed:
+            continue
+        cfg["props"] = props
+        save_cfg(server_dir, cfg)
+        with open(os.path.join(server_dir, "server.properties"), "w") as f:
+            f.write(render_properties(props))
+        print(c("已保存", "green"))
+        old = read_pid(server_dir)
+        if old and is_running(old["pid"]):
+            print(c(f"服务器正在运行, 重启后生效: 1b1t restart {server_dir}", "yellow"))
     return 0
 
 
@@ -1921,7 +2001,7 @@ def usage():
   doctor <目录>      自主排查问题(开服失败时也会自动运行)
   console <目录> <命令>   向服务器控制台发送命令(如: console ./ say hello)
   kill <目录>          强制杀死服务器进程(不保存世界, stop 卡死时用)
-  config <目录>        修改服务器设置(编辑 server.properties 全部项)
+  config <目录>        修改服务器设置(内存/端口/人数/全部项)
   settings             软件设置(默认配置/镜像目录/镜像HTTP地址)
   mirror [版本...]     预取安装包到本地镜像 ~/1b1t-mirror (之后开服不走网络)
   其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)
