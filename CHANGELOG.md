@@ -2,6 +2,15 @@
 
 每个版本标注: 新增了什么 / 修复了什么。
 
+## v1.0.25 - 2026-09-16
+
+### 修复
+- Windows MSI: codepage 改回 GBK(936) (之前 UTF-8 导致 Windows
+  报"无法打开此安装程序"), 快捷方式中文名正常
+- Windows MSI: PATH 追加改用 MSI 原生 Environment 表 (标准机制,
+  真 Windows 安装后终端输 1b1t 可用)
+- Windows 英文系统/管道下 CLI 输出中文不再崩溃 (stdout 容错)
+
 ## v1.0.24 - 2026-09-16
 
 ### 修复
