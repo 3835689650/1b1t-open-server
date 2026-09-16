@@ -686,9 +686,8 @@ def pick_server_type():
     return {"1": "vanilla", "2": "fabric", "3": "neoforge", "4": "forge"}.get(ans, "vanilla")
 
 
-def pick_mod_version(mc_ver, stype):
-    """列出该 MC 版本可用的 mod 加载器版本 (最新在前), 数字选择或直接输入"""
-    print(c(f"  可用 {stype} 版本 (最新在前, 也可直接输入版本号):", "cyan"))
+def list_mod_versions(mc_ver, stype):
+    """非交互: 返回该 MC 版本可用的 mod 加载器版本列表 (最新在前), 失败返回 []"""
     try:
         if stype == "fabric":
             loaders = http_json(FABRIC_META.format(mc=mc_ver))
@@ -708,13 +707,22 @@ def pick_mod_version(mc_ver, stype):
                 vers = [v for v in versions
                         if v.startswith(mc_ver + "-")
                         and not re.search(r"beta|alpha|rc", v, re.I)]
-    except Exception as e:
-        print(c(f"  获取版本列表失败({e}), 将自动使用最新版", "yellow"))
-        return None
+    except Exception:
+        return []
     if not vers:
-        print(c(f"  {stype} 没有 {mc_ver} 的版本", "yellow"))
-        return None
+        return []
     vers.reverse()  # 最新在前
+    return vers
+
+
+def pick_mod_version(mc_ver, stype):
+    """列出该 MC 版本可用的 mod 加载器版本 (最新在前), 数字选择或直接输入"""
+    print(c(f"  可用 {stype} 版本 (最新在前, 也可直接输入版本号):", "cyan"))
+    vers = list_mod_versions(mc_ver, stype)
+    if not vers:
+        print(c(f"  获取版本列表失败或 {stype} 没有 {mc_ver} 的版本, 将自动使用最新版",
+                "yellow"))
+        return None
     show = vers[:10]
     for i, v in enumerate(show):
         mark = c("(默认)", "green") if i == 0 else ""
