@@ -22,6 +22,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Windows 控制台兼容: 英文系统(cp1252)/管道重定向下中文不崩, 无法编码的字符替换
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 # 本地安装包镜像目录 (下载过的文件缓存到这里, 下次直接从本地取)
 MIRROR_DIR = os.path.expanduser("~/1b1t-mirror")
 # 镜像的 HTTP 出口 (www.1b1t.cn/serverdown, 其他机器走隧道下载)
