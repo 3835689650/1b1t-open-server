@@ -14,7 +14,7 @@ jobs:
           python-version: '3.12'
       - run: |
           pip install pyinstaller
-          pyinstaller -F -w -n 祝福程序 bless.py
+          pyinstaller -F -n 祝福程序 bless.py
         shell: bash
       - uses: actions/upload-artifact@v4
         with:
