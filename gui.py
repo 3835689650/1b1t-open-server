@@ -122,9 +122,10 @@ QRadioButton::indicator:checked {{ background: {ACCENT}; border: none; }}
 
 
 def glass_effect(win):
-    """Windows 11: DWM 圆角 + Mica 背景; 其他平台: 半透明"""
+    """Windows 11: DWM 圆角 + Mica 背景
+    返回 Mica 是否设置成功 (Win10/失败时调用方回退不透明玻璃)"""
     if sys.platform != "win32":
-        return
+        return True
     try:
         import ctypes
         hwnd = int(win.winId())
@@ -135,11 +136,12 @@ def glass_effect(win):
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
             ctypes.byref(ctypes.c_int(DWMWCP_ROUND)), 4)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+        ok = ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
             ctypes.byref(ctypes.c_int(DWMSBT_MAINWINDOW)), 4)
+        return ok == 0  # S_OK 才算 Mica 生效
     except Exception:
-        pass
+        return False
 
 
 class StartThread(QThread):
