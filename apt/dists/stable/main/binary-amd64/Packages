@@ -3,10 +3,10 @@ Version: 1.0.22
 Architecture: amd64
 Maintainer: 1b1t <3835689650@users.noreply.github.com>
 Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.22_amd64.deb
-Size: 76923940
-MD5sum: 7be4dce17a9dffd0b5c00f29ed879bb4
-SHA1: 35835d42fb41bb611dbed5a0963c5bc3966799be
-SHA256: 7f32631f8e764e1ddefd085c0eb036005c43397f072374381000e63195c18b16
+Size: 76923752
+MD5sum: 49cc1139ec6aac291a912ce1fe3f3267
+SHA1: d1fd30ae8a89261f2e44207170274e69063b58ca
+SHA256: e7d1db34956a329cf676a07e313a593c90d66a4cb6c900ae4e783a1651496acb
 Section: utils
 Priority: optional
 Homepage: https://www.1b1t.cn/
