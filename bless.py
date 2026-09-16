@@ -24,3 +24,5 @@ card = f"""
 """
 print(card)
 print("祝福已生成! 复制上面的卡片发给", b, "吧~")
+print()
+input("按回车键退出...")
