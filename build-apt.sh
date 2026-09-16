@@ -269,7 +269,14 @@ if git add -A && git commit -m "release $VER" --quiet 2>/dev/null \
     echo "  main: git push 成功"
 else
     echo "  main: git push 失败, 走 API"
-    for f in "${MAIN_FILES[@]}"; do api_put "$ROOT/$f" "$f" main; done
+    for f in "${MAIN_FILES[@]}"; do
+        # 历史版本安装包(大文件)已在各自 Release 资产里, 不重复传
+        case "$f" in
+            download/*)
+                [[ "$f" == *"_${VER}_"* ]] || continue ;;
+        esac
+        api_put "$ROOT/$f" "$f" main
+    done
 fi
 # gh-pages 只放 apt/ 目录内容
 git worktree prune
