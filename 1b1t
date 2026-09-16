@@ -708,17 +708,21 @@ def list_mod_versions(mc_ver, stype):
             if stype == "neoforge":
                 # 版本号 = MC 版本去掉开头 "1." (21.1.249 → MC 1.21.1)
                 ver_key = mc_ver[2:] if mc_ver.startswith("1.") else mc_ver
+                # 不锚定结尾: 兼容 -beta/-alpha 后缀 (21.2.0-beta)
                 vers = [v for v in versions
-                        if re.match(rf"^{re.escape(ver_key)}\.\d+$", v)
-                        and not re.search(r"beta|alpha|rc", v, re.I)]
+                        if re.match(rf"^{re.escape(ver_key)}\.\d+", v)]
             else:  # Forge 带 MC 前缀: 1.21.1-52.1.16
                 vers = [v for v in versions
-                        if v.startswith(mc_ver + "-")
-                        and not re.search(r"beta|alpha|rc", v, re.I)]
+                        if v.startswith(mc_ver + "-")]
     except Exception:
         return []
     if not vers:
         return []
+    # 优先稳定版; 该 MC 版本只有 beta 时(如 1.21.2)显示 beta
+    stable = [v for v in vers
+              if not re.search(r"beta|alpha|rc", v, re.I)]
+    if stable:
+        vers = stable
     vers.reverse()  # 最新在前
     return vers
 
@@ -1486,8 +1490,12 @@ def do_stop(server_dir):
     print(f"发送 stop 命令 (PID {old['pid']})...")
     if send_console(server_dir, "stop"):
         deadline = time.time() + 60
+        waited = 0
         while is_running(old["pid"]) and time.time() < deadline:
             time.sleep(1)
+            waited += 1
+            if waited % 10 == 0:
+                print(f"  等待服务器退出... {waited}s/60s")
     if is_running(old["pid"]):
         print(c("优雅关闭超时, 结束进程...", "yellow"))
         try:
