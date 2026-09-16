@@ -1,0 +1,17 @@
+Package: 1b1t-open-server
+Version: 1.0.22
+Architecture: amd64
+Maintainer: 1b1t <3835689650@users.noreply.github.com>
+Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.22_amd64.deb
+Size: 76923940
+MD5sum: 7be4dce17a9dffd0b5c00f29ed879bb4
+SHA1: 35835d42fb41bb611dbed5a0963c5bc3966799be
+SHA256: 7f32631f8e764e1ddefd085c0eb036005c43397f072374381000e63195c18b16
+Section: utils
+Priority: optional
+Homepage: https://www.1b1t.cn/
+Description: Minecraft 一键开服工具 (1b1t) 图形版
+ 苹果风液态玻璃图形界面: 服务器列表/开服向导/启动停止/实时日志;
+ 终端输 1b1t 可用命令行版; 修改服务器名字/副标题/端口/人数/内存;
+ 自动下载服务端核心、自动匹配 Java、doctor 自主排查。
+

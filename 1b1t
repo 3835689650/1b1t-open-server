@@ -1397,6 +1397,71 @@ def do_start(server_dir, dry_run=False, advanced=False):
         attach_console(server_dir)
 
 
+def api_start(server_dir, cfg, log=print):
+    """非交互启动 (GUI 用): 按 cfg 下载并启动, 日志走 log 回调
+    成功返回 True, 失败返回 False"""
+    def out(msg):
+        log(re.sub(r"\x1b\[[0-9;]*m", "", msg))
+
+    old = read_pid(server_dir)
+    if old and is_running(old["pid"]):
+        out(f"[错误] 服务器已在运行 (PID {old['pid']})")
+        return False
+
+    info = get_version_info(cfg["version"])
+    java_major = info.get("javaVersion", {}).get("majorVersion")
+    if java_major:
+        cfg["java"] = java_major
+
+    with open(os.path.join(server_dir, "eula.txt"), "w") as f:
+        f.write("# 继续使用即代表您同意 Minecraft EULA\n"
+                "# https://aka.ms/MinecraftEULA\neula=true\n")
+    with open(os.path.join(server_dir, "server.properties"), "w") as f:
+        f.write(render_properties(cfg["props"]))
+    save_cfg(server_dir, cfg)
+
+    java_bin = pick_java(cfg["version"], cfg.get("java"))
+    stype = cfg.get("server_type", "vanilla")
+    if stype == "fabric":
+        jar = os.path.join(server_dir, "fabric-server-launch.jar")
+        if not os.path.exists(jar) or os.path.getsize(jar) < 1000:
+            out("正在安装 Fabric 服务端...")
+            if not get_fabric_server_jar(cfg["version"], server_dir, java_bin,
+                                         cfg.get("mod_version")):
+                out("[错误] Fabric 安装失败")
+                return False
+    elif stype in ("neoforge", "forge"):
+        if not os.path.exists(os.path.join(server_dir, "run.sh")) and \
+           not os.path.exists(os.path.join(server_dir, "run.bat")):
+            out(f"正在安装 {stype} (下载依赖库, 可能需要几分钟)...")
+            reuse_libraries(server_dir)
+            if not get_mod_installer(cfg["version"], stype, server_dir,
+                                     java_bin, cfg.get("mod_version")):
+                out(f"[错误] {stype} 安装失败")
+                return False
+    else:
+        jar = os.path.join(server_dir, "server.jar")
+        if not get_server_jar(cfg["version"], jar, info):
+            out("[错误] 服务端下载失败")
+            return False
+
+    out(f"正在启动: MC {cfg['version']} 端口 {cfg['port']} "
+        f"内存 {cfg.get('ram', '2G')}")
+    p = start_server(server_dir, cfg)
+    out(f"已启动! PID {p.pid}")
+
+    if cfg.get("gamerules"):
+        out("等待服务器就绪(注入游戏规则)...")
+        if wait_ready(server_dir):
+            for rule, val in cfg["gamerules"].items():
+                send_console(server_dir, f"gamerule {rule} {val}")
+            out("已设置游戏规则: " + ", ".join(
+                f"{k}={v}" for k, v in cfg["gamerules"].items()))
+        else:
+            out("等待就绪超时, 游戏规则未注入(可用 console 命令手动设置)")
+    return True
+
+
 def do_stop(server_dir):
     old = read_pid(server_dir)
     if not old or not is_running(old["pid"]):
@@ -1760,14 +1825,20 @@ def do_config(server_dir):
     props = dict(cfg["props"])
     while True:
         port_now = str(cfg.get("port") or props.get("server-port", "25565"))
+        motd = props.get("motd", "")
+        motd_lines = motd.split("\n") if motd else []
+        name_now = motd_lines[0] if motd_lines else ""
+        sub_now = motd_lines[1] if len(motd_lines) > 1 else ""
         print(c(f"\n[修改服务器设置] {server_dir}", "cyan"))
         print(c(f"  当前: 端口 {port_now} · 内存 {cfg.get('ram', '?')} · "
                 f"人数 {props.get('max-players', '20')}", "dim"))
         print(f"  1. 内存上限      = {c(cfg.get('ram', '?'), 'green')}")
         print(f"  2. 端口          = {c(port_now, 'green')}")
         print(f"  3. 最大人数      = {c(props.get('max-players', '20'), 'green')}")
-        print(f"  4. 高级选项(编辑全部项)")
-        print(c("  输入 1-4 修改, 0 退出", "yellow"))
+        print(f"  4. 服务器名字    = {c(name_now or '(未设置)', 'green')}"
+              f"{('  副标题 = ' + c(sub_now, 'green')) if sub_now else ''}")
+        print(f"  5. 高级选项(编辑全部项)")
+        print(c("  输入 1-5 修改, 0 退出", "yellow"))
         ans = ask("  修改")
         changed = False
         if ans in ("", "0"):
@@ -1833,10 +1904,22 @@ def do_config(server_dir):
                     break
                 print(c("  无效, 请输入正整数 (0 取消)", "red"))
         elif ans == "4":
+            # 服务器名字和副标题 (游戏内服务器列表看到的两行)
+            print(c("  服务器名字 = 游戏界面看到的主标题", "dim"))
+            print(c("  副标题 = 名字下面的一行小字 (留空 = 不要副标题, 0 = 取消)", "dim"))
+            name = ask("  服务器名字", name_now or "1b1t Server")
+            if name == "0":
+                continue
+            sub = ask("  副标题", sub_now)
+            if sub == "0":
+                continue
+            props["motd"] = name + ("\n" + sub if sub else "")
+            changed = True
+        elif ans == "5":
             advanced_editor(props)
             changed = True
         else:
-            print(c("  输入 1-4 修改, 0 退出", "red"))
+            print(c("  输入 1-5 修改, 0 退出", "red"))
             continue
         if not changed:
             continue
