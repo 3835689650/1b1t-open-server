@@ -235,40 +235,15 @@ cd "$ROOT"
 
 echo "==> 4/5 推送 GitHub (git push 失败时自动走 API)"
 # API 上传单文件 (github.com 被墙时的替代)
-# 小文件走 Contents API; 大文件(>1MB)走 Git Data API (stdin, 无参数长度限制)
+# 小文件走 Contents API; 大文件(>1MB)上传到 GitHub Release 资产(永久保留)
 api_put() { # 本地文件 仓库路径 分支
     if [ "$(stat -c%s "$1")" -gt 1048576 ]; then
-        python3 - "$1" "$2" "$3" "$VER" <<'PYEOF'
-import base64, json, subprocess, sys, urllib.request
-local, repo_path, branch, msg = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-REPO = "3835689650/1b1t-open-server"
-token = subprocess.run(["gh", "auth", "token"], capture_output=True,
-                       text=True).stdout.strip()
-def api(method, path, body=None):
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{REPO}{path}", method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Authorization": f"Bearer {token}",
-                 "User-Agent": "1b1t", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as r:
-        return json.loads(r.read().decode())
-with open(local, "rb") as f:
-    data = base64.b64encode(f.read()).decode()
-blob = api("POST", "/git/blobs", {"content": data, "encoding": "base64"})
-ref = api("GET", f"/git/ref/heads/{branch}")
-commit = api("GET", f"/git/commits/{ref['object']['sha']}")
-tree = api("POST", "/git/trees", {
-    "base_tree": commit["tree"]["sha"],
-    "tree": [{"path": repo_path, "mode": "100644",
-              "type": "blob", "sha": blob["sha"]}],
-})
-new_commit = api("POST", "/git/commits", {
-    "message": f"release {msg}", "tree": tree["sha"],
-    "parents": [ref["object"]["sha"]],
-})
-api("PATCH", f"/git/refs/heads/{branch}", {"sha": new_commit["sha"]})
-print(f"  API: {repo_path}")
-PYEOF
+        gh release view "v$VER" --repo "$REPO" >/dev/null 2>&1 || \
+            gh release create "v$VER" --repo "$REPO" --title "v$VER" \
+                --notes "1b1t-open-server v$VER 安装包(Windows MSI / macOS dmg / Linux deb)" \
+                >/dev/null 2>&1
+        gh release upload "v$VER" "$1" --repo "$REPO" --clobber >/dev/null 2>&1
+        echo "  Release: $(basename "$1")"
     else
         local sha b64
         sha=$(gh api "repos/$REPO/contents/$2?ref=$3" --jq '.sha' 2>/dev/null || true)
