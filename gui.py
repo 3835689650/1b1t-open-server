@@ -515,6 +515,33 @@ class MainWindow(QMainWindow):
         form.addWidget(save_btn, 2, 3)
         mv.addLayout(form)
 
+        # Mod 管理 (mod 服务器才有)
+        self.mod_card = QWidget()
+        mod_v = QVBoxLayout(self.mod_card)
+        mod_v.setContentsMargins(0, 0, 0, 0)
+        mod_v.setSpacing(8)
+        mod_title = QLabel("Mod 管理 (mods 目录)")
+        mod_title.setObjectName("CardTitle")
+        mod_v.addWidget(mod_title)
+        mod_row = QHBoxLayout()
+        self.mod_list = QListWidget()
+        self.mod_list.setFixedHeight(110)
+        mod_v.addWidget(self.mod_list)
+        add_mod = QPushButton("＋ 添加 mod")
+        add_mod.clicked.connect(self.add_mod)
+        del_mod = QPushButton("删除")
+        del_mod.setObjectName("Danger")
+        del_mod.clicked.connect(self.del_mod)
+        open_dir = QPushButton("打开文件夹")
+        open_dir.clicked.connect(self.open_mods_dir)
+        mod_row.addWidget(add_mod)
+        mod_row.addWidget(del_mod)
+        mod_row.addWidget(open_dir)
+        mod_row.addStretch(1)
+        mod_v.addLayout(mod_row)
+        self.mod_card.hide()
+        mv.addWidget(self.mod_card)
+
         # 日志
         log_title = QLabel("服务器日志")
         log_title.setObjectName("CardTitle")
@@ -666,6 +693,7 @@ class MainWindow(QMainWindow):
                                  props.get("server-port", "25565")))
         self.ed_players.setText(props.get("max-players", "20"))
         self.cb_ram.setEditText(cfg.get("ram", "2G"))
+        self.refresh_mods()
         self.update_state()
 
     def update_state(self):
@@ -832,6 +860,69 @@ class MainWindow(QMainWindow):
         self.append_log(f"已删除: {d}")
         self.current = None
         self.refresh_list()
+
+    # ---------- Mod 管理 ----------
+    def mods_dir(self):
+        return os.path.join(self.current or "", "mods")
+
+    def refresh_mods(self):
+        stype = ""
+        if self.current:
+            cfg = core.load_cfg(self.current)
+            stype = (cfg or {}).get("server_type", "vanilla")
+        if stype not in ("fabric", "neoforge", "forge"):
+            self.mod_card.hide()
+            return
+        self.mod_card.show()
+        self.mod_list.clear()
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        for name in sorted(os.listdir(d)):
+            if name.endswith(".jar"):
+                self.mod_list.addItem(name)
+
+    def add_mod(self):
+        if not self.current:
+            return
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择 mod 文件 (jar)", "", "Mod 文件 (*.jar)")
+        if not files:
+            return
+        import shutil
+        for f in files:
+            dest = os.path.join(d, os.path.basename(f))
+            if os.path.abspath(f) == os.path.abspath(dest):
+                continue
+            shutil.copy(f, dest)
+            self.append_log(f"已添加 mod: {os.path.basename(f)}")
+        self.refresh_mods()
+        QMessageBox.information(self, "Mod 管理",
+                                f"已添加 {len(files)} 个 mod, 重启服务器后生效")
+
+    def del_mod(self):
+        item = self.mod_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "Mod 管理", "请先选择要删除的 mod")
+            return
+        name = item.text()
+        if QMessageBox.question(self, "删除 mod",
+                                f"确定删除 {name} ?") != QMessageBox.Yes:
+            return
+        try:
+            os.remove(os.path.join(self.mods_dir(), name))
+            self.append_log(f"已删除 mod: {name}")
+            self.refresh_mods()
+        except OSError as e:
+            QMessageBox.warning(self, "删除失败", str(e))
+
+    def open_mods_dir(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(d))
 
     # ---------- 保存设置 ----------
     def save_settings(self):
