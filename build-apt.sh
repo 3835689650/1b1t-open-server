@@ -17,9 +17,40 @@ trap 'rm -rf "$WORK"' EXIT
 
 echo "==> 1/5 打包 deb"
 mkdir -p "$WORK/deb/usr/local/bin" "$WORK/deb/DEBIAN"
-install -m755 "$ROOT/1b1t" "$WORK/deb/usr/local/bin/1b1t"
-ln -s 1b1t "$WORK/deb/usr/local/bin/1b1t-open-server"
-cat > "$WORK/deb/DEBIAN/control" <<EOF
+if [ -f "$ROOT/dist/1b1t-linux" ] && [ -f "$ROOT/dist/1b1t-gui" ]; then
+    # 图形版 deb: 编译好的二进制 (无需 python3), 桌面入口, 终端 1b1t 可用
+    mkdir -p "$WORK/deb/usr/share/applications"
+    install -m755 "$ROOT/dist/1b1t-linux" "$WORK/deb/usr/local/bin/1b1t"
+    install -m755 "$ROOT/dist/1b1t-gui" "$WORK/deb/usr/local/bin/1b1t-gui"
+    ln -s 1b1t "$WORK/deb/usr/local/bin/1b1t-open-server"
+    cat > "$WORK/deb/usr/share/applications/1b1t.desktop" <<'EOF'
+[Desktop Entry]
+Name=1b1t 开服工具
+Name[en]=1b1t Server Tool
+Comment=Minecraft 一键开服工具 (图形+命令行)
+Exec=/usr/local/bin/1b1t-gui
+Terminal=false
+Type=Application
+Categories=Game;Utility;
+EOF
+    cat > "$WORK/deb/DEBIAN/control" <<EOF
+Package: 1b1t-open-server
+Version: $VER
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: 1b1t <3835689650@users.noreply.github.com>
+Homepage: https://www.1b1t.cn/
+Description: Minecraft 一键开服工具 (1b1t) 图形版
+ 苹果风液态玻璃图形界面: 服务器列表/开服向导/启动停止/实时日志;
+ 终端输 1b1t 可用命令行版; 修改服务器名字/副标题/端口/人数/内存;
+ 自动下载服务端核心、自动匹配 Java、doctor 自主排查。
+EOF
+    DEB_OUT="$WORK/1b1t-open-server_${VER}_amd64.deb"
+else
+    install -m755 "$ROOT/1b1t" "$WORK/deb/usr/local/bin/1b1t"
+    ln -s 1b1t "$WORK/deb/usr/local/bin/1b1t-open-server"
+    cat > "$WORK/deb/DEBIAN/control" <<EOF
 Package: 1b1t-open-server
 Version: $VER
 Section: utils
@@ -33,9 +64,14 @@ Description: Minecraft 一键开服工具 (1b1t)
  server.properties 全部项; 自动下载服务端核心、自动匹配 Java、
  doctor 自主排查问题; 支持 start/stop/restart/status/console。
 EOF
-dpkg-deb --root-owner-group -b "$WORK/deb" "$WORK/1b1t-open-server_${VER}_all.deb"
+    DEB_OUT="$WORK/1b1t-open-server_${VER}_all.deb"
+fi
+dpkg-deb --root-owner-group -b "$WORK/deb" "$DEB_OUT"
 
-# Windows / macOS 版 (脚本 + 一键安装: 装完终端直接输 1b1t)
+# Windows / macOS 版 (有预生成的 msi/dmg 则直接使用: 编译好的 exe 无需 Python)
+if [ -f "$ROOT/1b1t-open-server_${VER}_windows.msi" ]; then
+    cp "$ROOT/1b1t-open-server_${VER}_windows.msi" "$WORK/"
+else
 mkdir -p "$WORK/win/1b1t-open-server" "$WORK/mac"
 cp "$ROOT/1b1t" "$WORK/win/1b1t-open-server/1b1t.py"
 cp "$ROOT/1b1t" "$WORK/mac/1b1t"
@@ -85,6 +121,11 @@ cat > "$WORK/mac/安装说明.txt" <<'EOF'
 EOF
 (cd "$WORK/win" && zip -qr "$WORK/1b1t-open-server_${VER}_windows.zip" 1b1t-open-server)
 (cd "$WORK/mac" && tar czf "$WORK/1b1t-open-server_${VER}_macos.tar.gz" 1b1t install.sh 安装说明.txt)
+fi   # 结束 msi 存在分支
+
+if [ -f "$ROOT/1b1t-open-server_${VER}_macos.dmg" ]; then
+    cp "$ROOT/1b1t-open-server_${VER}_macos.dmg" "$WORK/"
+fi
 
 # amd64 独立二进制 (免 Python, 单文件直接跑)
 mkdir -p "$WORK/amd64/1b1t-open-server"
@@ -143,23 +184,28 @@ EOF
     (cd "$WORK/arm64" && tar czf "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" 1b1t-open-server)
 fi
 
-# 平台包汇总到 download/ 目录 (deb 为 all 架构, 支持 amd64/arm64)
+# 平台包汇总到 download/ 目录
 mkdir -p "$ROOT/download"
-cp "$WORK/1b1t-open-server_${VER}_windows.zip" "$ROOT/download/"
-cp "$WORK/1b1t-open-server_${VER}_macos.tar.gz" "$ROOT/download/"
-cp "$WORK/1b1t-open-server_${VER}_amd64.tar.gz" "$ROOT/download/"
-[ -f "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" ] \
-    && cp "$WORK/1b1t-open-server_${VER}_arm64.tar.gz" "$ROOT/download/"
-cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/download/"
+for f in windows.zip windows.msi macos.tar.gz macos.dmg amd64.tar.gz arm64.tar.gz; do
+    [ -f "$WORK/1b1t-open-server_${VER}_$f" ] \
+        && cp "$WORK/1b1t-open-server_${VER}_$f" "$ROOT/download/"
+done
+cp "$DEB_OUT" "$ROOT/download/"
 
 echo "==> 2/5 生成 APT 仓库索引 (保留所有历史版本 deb)"
 rm -rf "$ROOT/apt/dists"   # 索引重建, pool 里的历史版本 deb 全部保留
 mkdir -p "$ROOT/apt/pool/main/1b1t-open-server" \
-         "$ROOT/apt/dists/stable/main/binary-all"
-cp "$WORK/1b1t-open-server_${VER}_all.deb" "$ROOT/apt/pool/main/1b1t-open-server/"
+         "$ROOT/apt/dists/stable/main/binary-all" \
+         "$ROOT/apt/dists/stable/main/binary-amd64"
+cp "$DEB_OUT" "$ROOT/apt/pool/main/1b1t-open-server/"
 (cd "$ROOT/apt" && dpkg-scanpackages --arch all pool/ \
     > dists/stable/main/binary-all/Packages)
 gzip -9kf "$ROOT/apt/dists/stable/main/binary-all/Packages"
+if [ "${DEB_OUT##*.}" = "deb" ] && [ "$(dpkg-deb -f "$DEB_OUT" Architecture)" = "amd64" ]; then
+    (cd "$ROOT/apt" && dpkg-scanpackages --arch amd64 pool/ \
+        > dists/stable/main/binary-amd64/Packages)
+    gzip -9kf "$ROOT/apt/dists/stable/main/binary-amd64/Packages"
+fi
 
 echo "==> 3/5 签名 Release"
 cd "$ROOT/apt/dists/stable"
@@ -168,15 +214,18 @@ cd "$ROOT/apt/dists/stable"
     echo "Label: 1b1t apt repo"
     echo "Suite: stable"
     echo "Codename: stable"
-    echo "Architectures: all"
+    echo "Architectures: all amd64"
     echo "Components: main"
     echo "Date: $(date -R -u)"
     echo "Valid-Until: $(date -R -u -d '+1 year')"
     for algo in sha256sum sha512sum; do
         echo "${algo%sum}:"
-        for f in main/binary-all/Packages main/binary-all/Packages.gz; do
-            read h _ <<< "$($algo "$f")"
-            echo " $h $(stat -c%s "$f") $f"
+        for d in main/binary-all main/binary-amd64; do
+            [ -d "$d" ] || continue
+            for f in "$d"/Packages "$d"/Packages.gz; do
+                read h _ <<< "$($algo "$f")"
+                echo " $h $(stat -c%s "$f") $f"
+            done
         done
     done
 } > Release
