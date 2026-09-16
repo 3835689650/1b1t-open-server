@@ -21,13 +21,14 @@ except ImportError:
     _spec.loader.exec_module(core)
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QColor, QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QPushButton, QRadioButton,
-                               QComboBox, QVBoxLayout, QWidget, QGridLayout,
-                               QButtonGroup)
+                               QGraphicsBlurEffect, QGraphicsPixmapItem,
+                               QGraphicsScene, QHBoxLayout, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QPushButton,
+                               QRadioButton, QComboBox, QVBoxLayout, QWidget,
+                               QGridLayout, QButtonGroup)
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -40,69 +41,78 @@ TEXT = "#F5F5F7"
 DIM = "#98989D"
 
 QSS = f"""
-* {{ font-family: "SF Pro Display", "SF Pro Text", "PingFang SC",
-     "Segoe UI", "Microsoft YaHei", sans-serif; color: {TEXT}; }}
+* {{ font-family: "SF Pro Text", "PingFang SC", "Segoe UI",
+     "Microsoft YaHei", sans-serif; color: {TEXT}; }}
 #Root {{ background: transparent; }}
 #Glass {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 rgba(36,36,42,238), stop:0.5 rgba(28,28,32,238),
-        stop:1 rgba(24,24,28,238));
+        stop:0 rgba(36,36,42,158), stop:0.5 rgba(28,28,32,158),
+        stop:1 rgba(24,24,28,158));
     border-radius: 20px;
     border: 1px solid rgba(255,255,255,28);
+    border-top: 1px solid rgba(255,255,255,64);
 }}
-#Sidebar {{ background: rgba(0,0,0,72); border-radius: 18px 0 0 18px;
-            border-right: 1px solid rgba(255,255,255,16); }}
-#Logo {{ font-size: 26px; font-weight: 700; letter-spacing: 1px; }}
-#Tagline {{ color: {DIM}; font-size: 11px; }}
+#Sidebar {{ background: rgba(255,255,255,14); border-radius: 18px 0 0 18px;
+            border-right: 1px solid rgba(255,255,255,18); }}
+#Logo {{ font-size: 24px; font-weight: 700; }}
+#Tagline {{ color: {DIM}; font-size: 12px; }}
 QPushButton {{
-    background: rgba(255,255,255,22); border: 1px solid rgba(255,255,255,30);
+    background: rgba(255,255,255,20); border: 1px solid rgba(255,255,255,30);
     border-radius: 12px; padding: 9px 18px; font-size: 13px; font-weight: 500;
 }}
-QPushButton:hover {{ background: rgba(255,255,255,38); }}
-QPushButton:pressed {{ background: rgba(255,255,255,52); }}
+QPushButton:hover {{ background: rgba(255,255,255,36); }}
+QPushButton:pressed {{ background: rgba(255,255,255,50); }}
+QPushButton:focus {{ border: 1px solid rgba(10,132,255,180); }}
+QPushButton:disabled {{ background: rgba(255,255,255,8);
+    color: rgba(245,245,247,80); border-color: rgba(255,255,255,12); }}
 QPushButton#Primary {{ background: {ACCENT}; border: none; color: white;
                        font-weight: 600; }}
 QPushButton#Primary:hover {{ background: #2A93FF; }}
-QPushButton#Danger {{ background: rgba(255,69,58,44); border: 1px solid
-                     rgba(255,69,58,90); color: {RED}; }}
-QPushButton#Danger:hover {{ background: rgba(255,69,58,70); }}
-QPushButton#Ghost {{ background: transparent; border: none; color: {DIM}; }}
+QPushButton#Primary:disabled {{ background: rgba(10,132,255,80);
+    color: rgba(255,255,255,140); }}
+QPushButton#Danger {{ background: {RED}; border: none; color: white;
+                      font-weight: 600; }}
+QPushButton#Danger:hover {{ background: #FF6A61; }}
+QPushButton#Danger:disabled {{ background: rgba(255,69,58,80);
+    color: rgba(255,255,255,140); }}
+QPushButton#WinBtn {{ background: transparent; border: none; border-radius: 8px;
+    padding: 0; font-size: 13px; font-weight: 700; }}
+QPushButton#WinBtn:hover {{ background: rgba(255,255,255,24); }}
 QLineEdit, QComboBox {{
-    background: rgba(255,255,255,16); border: 1px solid rgba(255,255,255,28);
+    background: rgba(255,255,255,14); border: 1px solid rgba(255,255,255,28);
     border-radius: 10px; padding: 8px 12px; font-size: 13px;
     selection-background-color: {ACCENT};
 }}
 QLineEdit:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{
-    background: #2C2C32; border: 1px solid rgba(255,255,255,30);
-    border-radius: 10px; selection-background-color: {ACCENT};
+    background: rgba(44,44,48,235); border: 1px solid rgba(255,255,255,30);
+    border-radius: 12px; selection-background-color: {ACCENT};
 }}
 QListWidget {{ background: transparent; border: none; outline: 0; }}
 QListWidget::item {{ border-radius: 12px; padding: 10px 12px; margin: 2px 4px; }}
 QListWidget::item:hover {{ background: rgba(255,255,255,16); }}
 QListWidget::item:selected {{ background: rgba(10,132,255,50);
                               border: 1px solid rgba(10,132,255,120); }}
-#ServerName {{ font-size: 30px; font-weight: 700; }}
-#ServerSub {{ color: {DIM}; font-size: 14px; }}
-#InfoChip {{ background: rgba(255,255,255,16);
+#ServerName {{ font-size: 24px; font-weight: 700;
+               font-family: "SF Pro Display", "PingFang SC", "Segoe UI",
+               sans-serif; }}
+#ServerSub {{ color: {DIM}; font-size: 13px; }}
+#InfoChip {{ background: rgba(255,255,255,14);
              border: 1px solid rgba(255,255,255,26); border-radius: 10px;
-             padding: 8px 14px; font-size: 12px; color: #D8D8DD; }}
+             padding: 7px 14px; font-size: 12px; color: #D8D8DD; }}
 #InfoChip b {{ color: {TEXT}; font-weight: 600; }}
-#CardTitle {{ font-size: 13px; font-weight: 600; color: #C8C8CE;
-              letter-spacing: 0.5px; }}
+#CardTitle {{ font-size: 13px; font-weight: 600; color: #C8C8CE; }}
 #LogBox {{
-    background: rgba(0,0,0,80); border: 1px solid rgba(255,255,255,22);
+    background: rgba(0,0,0,72); border: 1px solid rgba(255,255,255,20);
     border-radius: 14px; padding: 10px; font-family: "SF Mono", Consolas,
-    monospace; font-size: 12px; color: #C8E6C8;
+    monospace; font-size: 12px;
 }}
-#Dot {{ color: {GREEN}; font-size: 14px; }}
-#DotStop {{ color: {DIM}; font-size: 14px; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
 QScrollBar::handle:vertical {{ background: rgba(255,255,255,40);
     border-radius: 4px; min-height: 30px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-QMessageBox, QDialog {{ background: #242428; }}
+QMessageBox, QDialog {{ background: rgba(36,36,40,238); }}
 QDialog QLabel {{ font-size: 13px; }}
 QRadioButton {{ font-size: 13px; spacing: 6px; }}
 QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px;
@@ -165,13 +175,27 @@ class StopThread(QThread):
         self.done.emit()
 
 
+class ModVersThread(QThread):
+    """后台拉取 mod 加载器版本列表"""
+    done = Signal(str, list)
+
+    def __init__(self, mc_ver, stype):
+        super().__init__()
+        self.mc_ver, self.stype = mc_ver, stype
+
+    def run(self):
+        self.done.emit(self.stype, core.list_mod_versions(self.mc_ver,
+                                                          self.stype))
+
+
 class NewServerDialog(QDialog):
-    """开服向导: 版本/类型/目录/端口 (简单模式零多余询问)"""
+    """开服向导: 版本/类型(mod加载器+版本)/目录/端口"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("新建服务器")
         self.setFixedWidth(460)
+        self.mod_thread = None
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
 
@@ -199,7 +223,7 @@ class NewServerDialog(QDialog):
                 self.ver.addItem(v, v)
         lay.addWidget(self.ver)
 
-        lay.addWidget(QLabel("服务器类型"))
+        lay.addWidget(QLabel("服务器类型 (mod 加载器)"))
         row = QHBoxLayout()
         self.type_grp = QButtonGroup(self)
         self.type_radio = {}
@@ -208,10 +232,24 @@ class NewServerDialog(QDialog):
             rb = QRadioButton(name)
             if key == "vanilla":
                 rb.setChecked(True)
+            # 只在选中时刷新, 并直接传类型 (避免同组切换时序问题)
+            rb.toggled.connect(
+                lambda checked, k=key: checked and self.reload_mod_versions(k))
             self.type_grp.addButton(rb)
             self.type_radio[key] = rb
             row.addWidget(rb)
         lay.addLayout(row)
+
+        # mod 加载器版本 (选 Fabric/NeoForge/Forge 时显示)
+        self.mod_lab = QLabel("加载器版本")
+        self.mod_ver = QComboBox()
+        self.mod_ver.setEditable(True)
+        self.mod_ver.setPlaceholderText("自动使用最新版")
+        self.mod_lab.hide()
+        self.mod_ver.hide()
+        lay.addWidget(self.mod_lab)
+        lay.addWidget(self.mod_ver)
+        self.ver.currentIndexChanged.connect(self.reload_mod_versions)
 
         lay.addWidget(QLabel("服务器位置 (目录)"))
         drow = QHBoxLayout()
@@ -219,7 +257,7 @@ class NewServerDialog(QDialog):
         self.ddir.setPlaceholderText("~/1b1t-server")
         drow.addWidget(self.ddir, 1)
         browse = QPushButton("浏览…")
-        browse.setFixedWidth(72)
+        browse.setMinimumWidth(72)
         browse.clicked.connect(self.pick_dir)
         drow.addWidget(browse)
         lay.addLayout(drow)
@@ -233,6 +271,50 @@ class NewServerDialog(QDialog):
         ok.clicked.connect(self.accept)
         lay.addWidget(ok)
 
+    def _stop_mod_thread(self):
+        if self.mod_thread:
+            if self.mod_thread.isRunning():
+                self.mod_thread.terminate()
+                self.mod_thread.wait(1000)
+            self.mod_thread = None
+
+    def closeEvent(self, e):
+        """关闭时回收后台线程, 防止 QThread destroyed while running"""
+        self._stop_mod_thread()
+        super().closeEvent(e)
+
+    def reload_mod_versions(self, stype=None):
+        if stype is None:
+            stype = next(k for k, rb in self.type_radio.items()
+                         if rb.isChecked())
+        if stype == "vanilla":
+            self.mod_lab.hide()
+            self.mod_ver.hide()
+            return
+        self.mod_lab.show()
+        self.mod_ver.show()
+        self._stop_mod_thread()
+        self.mod_thread = ModVersThread(self.ver.currentData() or
+                                       self.ver.currentText(), stype)
+        self.mod_thread.done.connect(self.fill_mod_versions)
+        self.mod_thread.start()
+
+    def fill_mod_versions(self, stype, vers):
+        if stype != next(k for k, rb in self.type_radio.items()
+                         if rb.isChecked()):
+            return
+        cur = self.mod_ver.currentText()
+        self.mod_ver.clear()
+        for v in vers[:15]:
+            self.mod_ver.addItem(v, v)
+        if cur:
+            i = self.mod_ver.findText(cur)
+            if i >= 0:
+                self.mod_ver.setCurrentIndex(i)
+        # editable combobox 清空后可能不自动选中第一项, 显式选中
+        if self.mod_ver.count() and self.mod_ver.currentIndex() < 0:
+            self.mod_ver.setCurrentIndex(0)
+
     def pick_dir(self):
         d = QFileDialog.getExistingDirectory(self, "选择服务器目录",
                                              os.path.expanduser("~"))
@@ -242,6 +324,10 @@ class NewServerDialog(QDialog):
     def values(self):
         ver = self.ver.currentData()
         stype = next(k for k, rb in self.type_radio.items() if rb.isChecked())
+        mod_version = None
+        if stype != "vanilla" and self.mod_ver.count() > 0:
+            mod_version = self.mod_ver.currentData() or \
+                self.mod_ver.currentText().strip() or None
         server_dir = self.ddir.text().strip() or os.path.join(
             os.path.expanduser("~"),
             f"1b1t-server-{ver}")
@@ -260,7 +346,7 @@ class NewServerDialog(QDialog):
             QMessageBox.information(
                 self, "端口", f"端口 {port} 已被占用, 自动改用空闲端口 {free}")
             port = str(free)
-        return ver, stype, server_dir, port
+        return ver, stype, server_dir, port, mod_version
 
 
 class MainWindow(QMainWindow):
@@ -281,8 +367,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
         outer.setContentsMargins(14, 14, 14, 14)
+        # Linux 毛玻璃: 截屏桌面+高斯模糊铺底 (Windows 用 Mica, macOS 用系统 vibrancy)
+        self.is_linux = sys.platform.startswith("linux")
+        self.blur_label = QLabel(root)
+        self.blur_label.lower()
+        if self.is_linux:
+            self.blur_timer = QTimer(self)
+            self.blur_timer.timeout.connect(self.linux_blur_bg)
+            self.blur_timer.start(2000)
         glass = QFrame()
         glass.setObjectName("Glass")
+        # 窗口阴影 (无边框窗口必需, 否则玻璃感出不来)
+        from PySide6.QtWidgets import QGraphicsDropShadowEffect
+        shadow = QGraphicsDropShadowEffect(glass)
+        shadow.setBlurRadius(40)
+        shadow.setColor(QColor(0, 0, 0, 170))
+        shadow.setOffset(0, 12)
+        glass.setGraphicsEffect(shadow)
         outer.addWidget(glass)
         grid = QGridLayout(glass)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -316,20 +417,32 @@ class MainWindow(QMainWindow):
         mv.setContentsMargins(26, 24, 26, 20)
         mv.setSpacing(12)
 
-        # 头部: 名字 + 副标题 + 状态灯
+        # 头部: 窗口控制(红黄绿) + 名字 + 副标题 + 状态灯
         head = QHBoxLayout()
         headv = QVBoxLayout()
         headv.setSpacing(2)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(6)
         self.name_lab = QLabel("选择或新建服务器")
         self.name_lab.setObjectName("ServerName")
-        headv.addWidget(self.name_lab)
+        title_row.addWidget(self.name_lab)
+        # 苹果风窗口控制按钮 (关闭/最小化)
+        self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
+        self.win_close.clicked.connect(self.close)
+        self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
+        self.win_min.clicked.connect(self.showMinimized)
+        self.win_close.setToolTip("关闭")
+        self.win_min.setToolTip("最小化")
+        title_row.addStretch(1)
+        title_row.addWidget(self.win_min)
+        title_row.addWidget(self.win_close)
+        headv.addLayout(title_row)
         self.sub_lab = QLabel("在左侧选择服务器开始管理")
         self.sub_lab.setObjectName("ServerSub")
         headv.addWidget(self.sub_lab)
         head.addLayout(headv, 1)
         self.dot = QLabel("●")
-        self.dot.setObjectName("DotStop")
-        self.dot.setStyleSheet("font-size:16px")
+        self.dot.setStyleSheet(f"color:{DIM};font-size:16px")
         head.addWidget(self.dot)
         self.state_lab = QLabel("未选择")
         self.state_lab.setStyleSheet(f"color:{DIM};font-size:13px")
@@ -340,25 +453,29 @@ class MainWindow(QMainWindow):
         chips = QHBoxLayout()
         chips.setSpacing(8)
         self.chips = []
+        self.chips_widget = QWidget()
+        self.chips_layout = chips
         for _ in range(5):
             chip = QLabel("")
             chip.setObjectName("InfoChip")
             chips.addWidget(chip)
             self.chips.append(chip)
         chips.addStretch(1)
-        mv.addLayout(chips)
+        self.chips_widget.setLayout(chips)
+        self.chips_widget.hide()  # 未选择服务器时隐藏空药丸
+        mv.addWidget(self.chips_widget)
 
         # 操作按钮
         btns = QHBoxLayout()
         btns.setSpacing(10)
-        self.start_btn = QPushButton("启动")
+        self.start_btn = QPushButton("▶ 启动")
         self.start_btn.setObjectName("Primary")
         self.start_btn.clicked.connect(self.on_start)
-        self.stop_btn = QPushButton("停止")
+        self.stop_btn = QPushButton("■ 停止")
         self.stop_btn.clicked.connect(self.on_stop)
-        self.restart_btn = QPushButton("重启")
+        self.restart_btn = QPushButton("↻ 重启")
         self.restart_btn.clicked.connect(self.on_restart)
-        self.del_btn = QPushButton("删除")
+        self.del_btn = QPushButton("🗑 删除")
         self.del_btn.setObjectName("Danger")
         self.del_btn.clicked.connect(self.on_delete)
         for b in (self.start_btn, self.stop_btn, self.restart_btn,
@@ -398,6 +515,33 @@ class MainWindow(QMainWindow):
         form.addWidget(save_btn, 2, 3)
         mv.addLayout(form)
 
+        # Mod 管理 (mod 服务器才有)
+        self.mod_card = QWidget()
+        mod_v = QVBoxLayout(self.mod_card)
+        mod_v.setContentsMargins(0, 0, 0, 0)
+        mod_v.setSpacing(8)
+        mod_title = QLabel("Mod 管理 (mods 目录)")
+        mod_title.setObjectName("CardTitle")
+        mod_v.addWidget(mod_title)
+        mod_row = QHBoxLayout()
+        self.mod_list = QListWidget()
+        self.mod_list.setFixedHeight(110)
+        mod_v.addWidget(self.mod_list)
+        add_mod = QPushButton("＋ 添加 mod")
+        add_mod.clicked.connect(self.add_mod)
+        del_mod = QPushButton("删除")
+        del_mod.setObjectName("Danger")
+        del_mod.clicked.connect(self.del_mod)
+        open_dir = QPushButton("打开文件夹")
+        open_dir.clicked.connect(self.open_mods_dir)
+        mod_row.addWidget(add_mod)
+        mod_row.addWidget(del_mod)
+        mod_row.addWidget(open_dir)
+        mod_row.addStretch(1)
+        mod_v.addLayout(mod_row)
+        self.mod_card.hide()
+        mv.addWidget(self.mod_card)
+
         # 日志
         log_title = QLabel("服务器日志")
         log_title.setObjectName("CardTitle")
@@ -405,6 +549,7 @@ class MainWindow(QMainWindow):
         self.logbox = QPlainTextEdit()
         self.logbox.setObjectName("LogBox")
         self.logbox.setReadOnly(True)
+        self.logbox.setMaximumBlockCount(5000)  # 防内存无限增长
         mv.addWidget(self.logbox, 1)
         grid.addWidget(main, 0, 1)
 
@@ -416,10 +561,30 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         glass_effect(self)
 
-    # ---------- 拖动窗口 ----------
+    def _win_btn(self, glyph, idle, hover):
+        """苹果交通灯样式窗口按钮"""
+        b = QPushButton(glyph)
+        b.setObjectName("WinBtn")
+        b.setFixedSize(18, 18)
+        b.setStyleSheet(
+            f"QPushButton#WinBtn {{ background: {idle}; border: none;"
+            f"border-radius: 9px; color: rgba(0,0,0,0); font-size: 10px;"
+            f"font-weight: 700; padding: 0; }}"
+            f"QPushButton#WinBtn:hover {{ background: {hover};"
+            f"color: rgba(0,0,0,140); }}")
+        return b
+
+    # ---------- 拖动窗口 (仅空白区域) ----------
     def mousePressEvent(self, e):
-        if e.button() == Qt.LeftButton:
+        if e.button() != Qt.LeftButton:
+            return
+        w = self.childAt(e.position().toPoint())
+        # 只在主玻璃/侧栏空白处拖动, 点击控件不拖
+        if w is None or isinstance(w, (QFrame, QListWidget)) \
+                or w.objectName() in ("Glass", "Sidebar", "Root"):
             self.drag_pos = e.globalPosition().toPoint() - self.pos()
+        else:
+            self.drag_pos = None
 
     def mouseMoveEvent(self, e):
         if self.drag_pos is not None and e.buttons() & Qt.LeftButton:
@@ -427,6 +592,61 @@ class MainWindow(QMainWindow):
 
     def mouseReleaseEvent(self, e):
         self.drag_pos = None
+
+    # ---------- Linux 毛玻璃背景 ----------
+    def linux_blur_bg(self):
+        """截取窗口后方桌面区域, 高斯模糊后铺底 (模拟苹果液态玻璃)"""
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+        pm = screen.grabWindow(0, self.x(), self.y(), w, h)
+        if pm.isNull():
+            return
+        # 降采样 1/4 再模糊(性能), 放大回原尺寸铺底
+        small = pm.scaled(max(1, w // 4), max(1, h // 4),
+                          Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(small)
+        blur = QGraphicsBlurEffect()
+        blur.setBlurRadius(22)
+        item.setGraphicsEffect(blur)
+        scene.addItem(item)
+        out = QPixmap(small.size())
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        scene.render(p)
+        p.end()
+        big = out.scaled(w, h, Qt.KeepAspectRatio, Qt.FastTransformation)
+        # 圆角裁剪, 盖住 20px 圆角外区域
+        from PySide6.QtGui import QPainterPath
+        rounded = QPixmap(w, h)
+        rounded.fill(Qt.transparent)
+        rp = QPainter(rounded)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w - 1, h - 1, 20, 20)
+        rp.setClipPath(path)
+        rp.drawPixmap(0, 0, big)
+        rp.end()
+        self.blur_label.setPixmap(rounded)
+        self.blur_label.setGeometry(0, 0, w, h)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.is_linux:
+            self.linux_blur_bg()
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if self.is_linux:
+            self.linux_blur_bg()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.is_linux:
+            self.linux_blur_bg()
 
     # ---------- 服务器列表 ----------
     def refresh_list(self, select=None):
@@ -466,12 +686,14 @@ class MainWindow(QMainWindow):
                  f"<b>人数</b> {props.get('max-players', '20')}"]
         for chip, txt in zip(self.chips, chips):
             chip.setText(txt)
+        self.chips_widget.show()
         self.ed_name.setText(name)
         self.ed_sub.setText(sub)
         self.ed_port.setText(str(cfg.get("port") or
                                  props.get("server-port", "25565")))
         self.ed_players.setText(props.get("max-players", "20"))
         self.cb_ram.setEditText(cfg.get("ram", "2G"))
+        self.refresh_mods()
         self.update_state()
 
     def update_state(self):
@@ -498,10 +720,24 @@ class MainWindow(QMainWindow):
 
     # ---------- 日志 ----------
     def append_log(self, text):
+        """按关键词着色: 错误红/警告黄/普通白 (苹果风终端配色)"""
         for line in text.splitlines():
-            self.logbox.appendPlainText(line)
+            low = line.lower()
+            if re.search(r"error|exception|fail|错误|失败", low):
+                self.logbox.appendHtml(
+                    f'<span style="color:#FF6A61">{self._esc(line)}</span>')
+            elif re.search(r"warn|警告", low):
+                self.logbox.appendHtml(
+                    f'<span style="color:#FFD60A">{self._esc(line)}</span>')
+            else:
+                self.logbox.appendPlainText(line)
         sb = self.logbox.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    @staticmethod
+    def _esc(s):
+        return (s.replace("&", "&amp;").replace("<", "&lt;")
+                 .replace(">", "&gt;"))
 
     def poll_log(self):
         if not self.current:
@@ -531,7 +767,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted:
             return
         try:
-            ver, stype, server_dir, port = dlg.values()
+            ver, stype, server_dir, port, mod_version = dlg.values()
         except ValueError as e:
             QMessageBox.warning(self, "参数错误", str(e))
             return
@@ -549,7 +785,8 @@ class MainWindow(QMainWindow):
                  "difficulty": st["difficulty"],
                  "max-players": "20"}
         cfg = {"dir": server_dir, "version": ver, "server_type": stype,
-               "port": int(port), "ram": core.default_ram(),
+               "mod_version": mod_version, "port": int(port),
+               "ram": core.default_ram(),
                "props": props, "gamerules": {}}
         if st["keep_inventory"] == "true":
             cfg["gamerules"]["keepInventory"] = "true"
@@ -623,6 +860,69 @@ class MainWindow(QMainWindow):
         self.append_log(f"已删除: {d}")
         self.current = None
         self.refresh_list()
+
+    # ---------- Mod 管理 ----------
+    def mods_dir(self):
+        return os.path.join(self.current or "", "mods")
+
+    def refresh_mods(self):
+        stype = ""
+        if self.current:
+            cfg = core.load_cfg(self.current)
+            stype = (cfg or {}).get("server_type", "vanilla")
+        if stype not in ("fabric", "neoforge", "forge"):
+            self.mod_card.hide()
+            return
+        self.mod_card.show()
+        self.mod_list.clear()
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        for name in sorted(os.listdir(d)):
+            if name.endswith(".jar"):
+                self.mod_list.addItem(name)
+
+    def add_mod(self):
+        if not self.current:
+            return
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "选择 mod 文件 (jar)", "", "Mod 文件 (*.jar)")
+        if not files:
+            return
+        import shutil
+        for f in files:
+            dest = os.path.join(d, os.path.basename(f))
+            if os.path.abspath(f) == os.path.abspath(dest):
+                continue
+            shutil.copy(f, dest)
+            self.append_log(f"已添加 mod: {os.path.basename(f)}")
+        self.refresh_mods()
+        QMessageBox.information(self, "Mod 管理",
+                                f"已添加 {len(files)} 个 mod, 重启服务器后生效")
+
+    def del_mod(self):
+        item = self.mod_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "Mod 管理", "请先选择要删除的 mod")
+            return
+        name = item.text()
+        if QMessageBox.question(self, "删除 mod",
+                                f"确定删除 {name} ?") != QMessageBox.Yes:
+            return
+        try:
+            os.remove(os.path.join(self.mods_dir(), name))
+            self.append_log(f"已删除 mod: {name}")
+            self.refresh_mods()
+        except OSError as e:
+            QMessageBox.warning(self, "删除失败", str(e))
+
+    def open_mods_dir(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        d = self.mods_dir()
+        os.makedirs(d, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(d))
 
     # ---------- 保存设置 ----------
     def save_settings(self):
