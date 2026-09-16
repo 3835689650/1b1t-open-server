@@ -171,6 +171,21 @@ class BackupThread(QThread):
         self.done.emit(ok)
 
 
+class _EmitIO:
+    """把 print 输出实时转发到 GUI 日志 (停止过程不再无反馈)"""
+
+    def __init__(self, emit):
+        self.emit = emit
+
+    def write(self, s):
+        for line in str(s).splitlines():
+            if line.strip():
+                self.emit(line)
+
+    def flush(self):
+        pass
+
+
 class StopThread(QThread):
     log = Signal(str)
     done = Signal()
@@ -180,14 +195,9 @@ class StopThread(QThread):
         self.server_dir = server_dir
 
     def run(self):
-        import io
         import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
             core.do_stop(self.server_dir)
-        for line in buf.getvalue().splitlines():
-            if line.strip():
-                self.log.emit(line)
         self.done.emit()
 
 
