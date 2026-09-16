@@ -595,16 +595,22 @@ class MainWindow(QMainWindow):
 
     # ---------- Linux 毛玻璃背景 ----------
     def enable_opaque_glass(self):
-        """抓不到桌面内容时(合成器 root 黑)回退: 不透明深色玻璃"""
+        """抓不到桌面内容时(合成器/Xwayland root 黑)回退: 不透明深色玻璃"""
         if getattr(self, "linux_opaque", False):
             return
         self.linux_opaque = True
         self.blur_label.hide()
         self.setAttribute(Qt.WA_TranslucentBackground, False)
+        # Root 必须补不透明底: 否则 Glass 圆角外 14px 边距区露黑块
         self.centralWidget().setStyleSheet(
+            "#Root { background: #18181C; }"
             "#Glass { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-            " stop:0 rgba(36,36,42,248), stop:0.5 rgba(28,28,32,248),"
-            " stop:1 rgba(24,24,28,248)); }")
+            " stop:0 rgba(36,36,42,255), stop:0.5 rgba(28,28,32,255),"
+            " stop:1 rgba(24,24,28,255)); }")
+        # 已 show 时重建窗口让 X11 visual 切到 depth 24 (alpha 丢弃)
+        if self.isVisible():
+            QTimer.singleShot(0, lambda: (self.destroy(True, True),
+                                          self.show()))
 
     def linux_blur_bg(self):
         """截取窗口后方桌面区域, 高斯模糊后铺底 (模拟苹果液态玻璃)
