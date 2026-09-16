@@ -594,8 +594,29 @@ class MainWindow(QMainWindow):
         self.drag_pos = None
 
     # ---------- Linux 毛玻璃背景 ----------
+    def enable_opaque_glass(self):
+        """抓不到桌面内容时(合成器/Xwayland root 黑)回退: 不透明深色玻璃"""
+        if getattr(self, "linux_opaque", False):
+            return
+        self.linux_opaque = True
+        self.blur_label.hide()
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        # Root 必须补不透明底: 否则 Glass 圆角外 14px 边距区露黑块
+        self.centralWidget().setStyleSheet(
+            "#Root { background: #18181C; }"
+            "#Glass { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+            " stop:0 rgba(36,36,42,255), stop:0.5 rgba(28,28,32,255),"
+            " stop:1 rgba(24,24,28,255)); }")
+        # 已 show 时重建窗口让 X11 visual 切到 depth 24 (alpha 丢弃)
+        if self.isVisible():
+            QTimer.singleShot(0, lambda: (self.destroy(True, True),
+                                          self.show()))
+
     def linux_blur_bg(self):
-        """截取窗口后方桌面区域, 高斯模糊后铺底 (模拟苹果液态玻璃)"""
+        """截取窗口后方桌面区域, 高斯模糊后铺底 (模拟苹果液态玻璃)
+        合成器下 root 窗口为黑时自动回退不透明玻璃"""
+        if getattr(self, "linux_opaque", False):
+            return
         screen = QApplication.primaryScreen()
         if not screen:
             return
@@ -604,6 +625,15 @@ class MainWindow(QMainWindow):
             return
         pm = screen.grabWindow(0, self.x(), self.y(), w, h)
         if pm.isNull():
+            return
+        # 采样检测: root 全黑 = 合成器桌面抓不到 → 回退不透明玻璃
+        img = pm.toImage()
+        pts = [(x * img.width() // 8, y * img.height() // 8)
+               for x in range(1, 8) for y in range(1, 8)]
+        black = sum(1 for x, y in pts
+                    if img.pixelColor(x, y).lightness() < 12)
+        if black > len(pts) * 0.8:
+            self.enable_opaque_glass()
             return
         # 降采样 1/4 再模糊(性能), 放大回原尺寸铺底
         small = pm.scaled(max(1, w // 4), max(1, h // 4),
