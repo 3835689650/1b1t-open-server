@@ -1558,6 +1558,76 @@ def do_kill(server_dir):
     print(c("已杀死", "green"))
 
 
+def world_dirs(server_dir, cfg):
+    """该服务器需要备份的世界目录列表 (主世界/下界/末地)"""
+    props = (cfg or {}).get("props", {})
+    level = props.get("level-name", "world")
+    names = [level, level + "_nether", level + "_the_end"]
+    return [d for d in names
+            if os.path.isdir(os.path.join(server_dir, d))]
+
+
+def backup_world(server_dir, log=print):
+    """备份存档到 server_dir/backups/<世界>_时间戳.tar.gz
+    运行中自动 save-all + save-off → 打包 → save-on 保证文件一致
+    按设置保留最近 N 份, 记录 last_backup 时间戳; 返回备份路径或 None"""
+    cfg = load_cfg(server_dir)
+    worlds = world_dirs(server_dir, cfg)
+    if not worlds:
+        log(c("[备份] 没有找到世界存档目录 (未开服过?)", "yellow"))
+        return None
+    running = False
+    old = read_pid(server_dir)
+    if old and is_running(old["pid"]):
+        running = True
+        send_console(server_dir, "save-all")
+        send_console(server_dir, "save-off")  # 暂停自动保存保证文件一致
+        time.sleep(3)
+    level = (cfg or {}).get("props", {}).get("level-name", "world")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    backups = os.path.join(server_dir, "backups")
+    os.makedirs(backups, exist_ok=True)
+    out = os.path.join(backups, f"{level}_{stamp}.tar.gz")
+    try:
+        import tarfile
+        with tarfile.open(out, "w:gz") as tf:
+            for d in worlds:
+                tf.add(os.path.join(server_dir, d),
+                       arcname=os.path.basename(d))
+    except Exception as e:
+        log(c(f"[备份] 打包失败: {e}", "red"))
+        if running:
+            send_console(server_dir, "save-on")
+        return None
+    if running:
+        send_console(server_dir, "save-on")
+    size_mb = os.path.getsize(out) // 1024 // 1024
+    log(c(f"[备份] 完成: {os.path.basename(out)} ({size_mb} MB)", "green"))
+    if cfg:
+        cfg["last_backup"] = int(time.time())
+        save_cfg(server_dir, cfg)
+    # 按保留份数清理旧备份 (防磁盘被备份塞满)
+    st = load_settings()
+    try:
+        keep = max(1, int(st.get("backup_keep", 10) or 10))
+    except (ValueError, TypeError):
+        keep = 10
+    names = sorted([f for f in os.listdir(backups) if f.endswith(".tar.gz")],
+                   reverse=True)
+    for old_f in names[keep:]:
+        try:
+            os.remove(os.path.join(backups, old_f))
+            log(c(f"[备份] 清理旧备份: {old_f}", "dim"))
+        except OSError:
+            pass
+    return out
+
+
+def do_backup(server_dir):
+    """backup 命令: 手动备份存档"""
+    return 0 if backup_world(server_dir) else 1
+
+
 def do_status(server_dir):
     old = read_pid(server_dir)
     cfg = load_cfg(server_dir)
@@ -1964,6 +2034,10 @@ def do_settings():
          "留空=恢复默认"),
         ("6", "镜像HTTP地址", st.get("mirror_http") or MIRROR_HTTP,
          "其他机器的下载入口"),
+        ("7", "定时备份间隔(分钟)", st.get("backup_interval_min", "0"),
+         "0=关闭, GUI 开着时自动备份"),
+        ("8", "备份保留份数", st.get("backup_keep", "10"),
+         "超过自动删最旧的"),
     ]
     while True:
         print()
@@ -1972,7 +2046,7 @@ def do_settings():
         ans = ask("  修改", "")
         if ans in ("", "0"):
             break
-        m = re.match(r"(\d)\s+(.*)", ans)
+        m = re.match(r"(\d+)\s+(.*)", ans)
         if not m:
             print(c("  格式: 编号 值, 如: 2 hard; 0 退出", "red"))
             continue
@@ -1981,12 +2055,18 @@ def do_settings():
             print(c("  编号无效", "red"))
             continue
         key = ("online_mode", "difficulty", "motd", "keep_inventory",
-               "mirror_dir", "mirror_http")[i]
+               "mirror_dir", "mirror_http", "backup_interval_min",
+               "backup_keep")[i]
         val = m.group(2).strip()
         if key in ("online_mode", "keep_inventory"):
             val = str(val.lower() in ("true", "y", "yes", "1")).lower()
         if key == "mirror_dir":
             val = "" if val == "默认" else val
+        if key in ("backup_interval_min", "backup_keep"):
+            if not val.isdigit():
+                print(c("  请输入非负整数", "red"))
+                continue
+            val = str(int(val))
         st[key] = val
         items = [
             ("1", "默认正版验证", st["online_mode"], "true/false"),
@@ -1997,6 +2077,10 @@ def do_settings():
              "留空=恢复默认"),
             ("6", "镜像HTTP地址", st.get("mirror_http") or MIRROR_HTTP,
              "其他机器的下载入口"),
+            ("7", "定时备份间隔(分钟)", st.get("backup_interval_min", "0"),
+             "0=关闭, GUI 开着时自动备份"),
+            ("8", "备份保留份数", st.get("backup_keep", "10"),
+             "超过自动删最旧的"),
         ]
         save_settings(st)
         print(c("已保存", "green"))
