@@ -331,6 +331,12 @@ class NewServerDialog(QDialog):
             return
         cur = self.mod_ver.currentText()
         self.mod_ver.clear()
+        if not vers:
+            # 该 MC 版本没有此加载器 (如 NeoForge 不支持 1.20.1)
+            self.mod_ver.addItem(f"(该版本无 {stype} 可用, 将自动用最新)",
+                                 None)
+            self.mod_ver.setCurrentIndex(0)
+            return
         for v in vers[:15]:
             self.mod_ver.addItem(v, v)
         if cur:
