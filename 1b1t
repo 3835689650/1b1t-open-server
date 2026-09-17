@@ -311,18 +311,25 @@ def load_manifest(force=False):
                 return data["versions"]
         except (OSError, ValueError):
             pass
-    try:
-        req = urllib.request.Request(MANIFEST_URL, headers={"User-Agent": APP})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = json.loads(r.read().decode())
-        versions = [{"id": v["id"], "type": v["type"], "url": v["url"]}
-                    for v in data["versions"]]
-        with open(cache, "w") as f:
-            json.dump({"ts": time.time(), "versions": versions}, f)
-        return versions
-    except Exception as e:
-        print(c(f"  在线清单获取失败({e}), 使用内置列表", "yellow"))
-        return [{"id": v, "type": "release", "url": ""} for v in FALLBACK_VERSIONS]
+    # 网络不稳时重试, 两个源轮换 (BMCLAPI 大响应易被截断)
+    last_err = None
+    for url in (MANIFEST_URL,
+                "https://piston-meta.mojang.com/mc/game/version_manifest.json"):
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": APP})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    data = json.loads(r.read().decode())
+                versions = [{"id": v["id"], "type": v["type"], "url": v["url"]}
+                            for v in data["versions"]]
+                with open(cache, "w") as f:
+                    json.dump({"ts": time.time(), "versions": versions}, f)
+                return versions
+            except Exception as e:
+                last_err = e
+                time.sleep(1)
+    print(c(f"  在线清单获取失败({last_err}), 使用内置列表", "yellow"))
+    return [{"id": v, "type": "release", "url": ""} for v in FALLBACK_VERSIONS]
 
 
 # 版本特性参考: (版本范围, 优点, 缺点, 最低配置)
