@@ -165,6 +165,7 @@ class BackupThread(QThread):
     def __init__(self, server_dir):
         super().__init__()
         self.server_dir = server_dir
+        self.auto = False  # 自动备份失败只记日志不弹窗
 
     def run(self):
         ok = core.backup_world(self.server_dir, self.log.emit) is not None
@@ -212,6 +213,151 @@ class ModVersThread(QThread):
     def run(self):
         self.done.emit(self.stype, core.list_mod_versions(self.mc_ver,
                                                           self.stype))
+
+
+class SettingsDialog(QDialog):
+    """软件设置: 版本号 / 自定义背景 / 定时备份 / 默认配置"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_win = parent
+        self.setWindowTitle("设置")
+        self.setFixedWidth(440)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+        # 版本号
+        ver = QLabel(f"1b1t-open-server   v{core.APP_VERSION}")
+        ver.setStyleSheet(f"font-size:16px;font-weight:700;color:{TEXT}")
+        lay.addWidget(ver)
+
+        # 自定义背景
+        lay.addWidget(QLabel("自定义背景"))
+        bg_row = QHBoxLayout()
+        self.bg_name = QLabel("(无, 深色背景)")
+        self.bg_name.setStyleSheet(f"color:{DIM};font-size:12px")
+        bg_row.addWidget(self.bg_name, 1)
+        pick = QPushButton("选择图片")
+        pick.clicked.connect(self.pick_bg)
+        clear = QPushButton("清除")
+        clear.clicked.connect(self.clear_bg)
+        bg_row.addWidget(pick)
+        bg_row.addWidget(clear)
+        lay.addLayout(bg_row)
+
+        # 定时备份
+        lay.addWidget(QLabel("定时备份"))
+        bak_row = QHBoxLayout()
+        self.bak_plan = QComboBox()
+        self.bak_plan.addItems(["关", "每 30 分钟", "每 1 小时",
+                                "每 2 小时", "每 6 小时", "每 12 小时",
+                                "每 24 小时"])
+        bak_row.addWidget(self.bak_plan, 1)
+        bak_row.addWidget(QLabel("保留份数"))
+        self.bak_keep = QLineEdit()
+        self.bak_keep.setFixedWidth(64)
+        bak_row.addWidget(self.bak_keep)
+        lay.addLayout(bak_row)
+
+        # 默认配置 (简单模式新服使用)
+        lay.addWidget(QLabel("新服务器默认配置"))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(QLabel("正版验证"), 0, 0)
+        self.online = QComboBox()
+        self.online.addItems(["开", "关"])
+        grid.addWidget(self.online, 0, 1)
+        grid.addWidget(QLabel("难度"), 0, 2)
+        self.diff = QComboBox()
+        self.diff.addItems(["peaceful", "easy", "normal", "hard"])
+        grid.addWidget(self.diff, 0, 3)
+        grid.addWidget(QLabel("默认 MOTD"), 1, 0)
+        self.motd = QLineEdit()
+        grid.addWidget(self.motd, 1, 1, 1, 3)
+        grid.addWidget(QLabel("死亡不掉落"), 2, 0)
+        self.keep = QComboBox()
+        self.keep.addItems(["开", "关"])
+        grid.addWidget(self.keep, 2, 1)
+        lay.addLayout(grid)
+
+        save = QPushButton("保存设置")
+        save.setObjectName("Primary")
+        save.clicked.connect(self.save_all)
+        lay.addWidget(save)
+        self.reload_vals()
+
+    def reload_vals(self):
+        st = core.load_settings()
+        bg = st.get("bg_image", "")
+        self.bg_name.setText(os.path.basename(bg) if bg else "(无, 深色背景)")
+        try:
+            mins = int(st.get("backup_interval_min", "0") or 0)
+        except (ValueError, TypeError):
+            mins = 0
+        plan = {0: 0, 30: 1, 60: 2, 120: 3, 360: 4, 720: 5, 1440: 6}
+        self.bak_plan.setCurrentIndex(plan.get(mins, 0))
+        self.bak_keep.setText(str(st.get("backup_keep", "10")))
+        self.online.setCurrentIndex(0 if st["online_mode"] == "true" else 1)
+        self.diff.setCurrentText(st["difficulty"])
+        self.motd.setText(st["motd"])
+        self.keep.setCurrentIndex(
+            0 if st["keep_inventory"] == "true" else 1)
+
+    def pick_bg(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "选择背景图片", "",
+            "图片 (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if f:
+            st = core.load_settings()
+            st["bg_image"] = f
+            core.save_settings(st)
+            self.reload_vals()
+            if self.parent_win:
+                self.parent_win.apply_background()
+
+    def clear_bg(self):
+        st = core.load_settings()
+        st.pop("bg_image", None)
+        core.save_settings(st)
+        self.reload_vals()
+        if self.parent_win:
+            self.parent_win.apply_background()
+
+    def save_all(self):
+        st = core.load_settings()
+        plan = {0: "0", 1: "30", 2: "60", 3: "120", 4: "360", 5: "720",
+                6: "1440"}
+        st["backup_interval_min"] = plan[self.bak_plan.currentIndex()]
+        keep = self.bak_keep.text().strip()
+        if keep.isdigit() and int(keep) >= 1:
+            st["backup_keep"] = str(int(keep))
+        st["online_mode"] = "true" if self.online.currentIndex() == 0 \
+            else "false"
+        st["difficulty"] = self.diff.currentText()
+        st["motd"] = self.motd.text().strip() or "1b1t Server"
+        st["keep_inventory"] = "true" if self.keep.currentIndex() == 0 \
+            else "false"
+        core.save_settings(st)
+        if self.parent_win:
+            self.parent_win.load_backup_plan()
+        QMessageBox.information(self, "设置", "已保存")
+        self.accept()
+
+
+class LogWindow(QDialog):
+    """独立日志窗口 (玻璃样式, 跟随主窗口日志实时滚动)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("1b1t 服务器日志")
+        self.resize(720, 480)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 14, 14, 14)
+        self.logbox = QPlainTextEdit()
+        self.logbox.setObjectName("LogBox")
+        self.logbox.setReadOnly(True)
+        self.logbox.setMaximumBlockCount(5000)
+        lay.addWidget(self.logbox)
 
 
 class NewServerDialog(QDialog):
@@ -269,7 +415,7 @@ class NewServerDialog(QDialog):
         # mod 加载器版本 (选 Fabric/NeoForge/Forge 时显示)
         self.mod_lab = QLabel("加载器版本")
         self.mod_ver = QComboBox()
-        self.mod_ver.setEditable(True)
+        self.mod_ver.setEditable(False)  # 纯下拉选择, 不用输入
         self.mod_ver.setPlaceholderText("自动使用最新版")
         self.mod_lab.hide()
         self.mod_ver.hide()
@@ -393,6 +539,7 @@ class MainWindow(QMainWindow):
         self.start_thread = None
         self.stop_thread = None
         self.bak_thread = None
+        self.log_win = None  # 独立日志窗口
 
         root = QWidget()
         root.setObjectName("Root")
@@ -437,6 +584,13 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self.on_select)
         sv.addWidget(self.list, 1)
+        # 侧边栏底部: 版本号 + 设置入口
+        ver_lab = QLabel(f"v{core.APP_VERSION}")
+        ver_lab.setStyleSheet(f"color:{DIM};font-size:11px")
+        sv.addWidget(ver_lab)
+        set_btn = QPushButton("⚙ 设置")
+        set_btn.clicked.connect(self.open_settings)
+        sv.addWidget(set_btn)
         grid.addWidget(side, 0, 0)
 
         # ---- 右栏 ----
@@ -617,14 +771,31 @@ class MainWindow(QMainWindow):
         mv.addWidget(self.mod_card)
 
         # 日志
+        log_head = QHBoxLayout()
         log_title = QLabel("服务器日志")
         log_title.setObjectName("CardTitle")
-        mv.addWidget(log_title)
+        log_head.addWidget(log_title)
+        log_head.addStretch(1)
+        self.log_pop_btn = QPushButton("⧉ 弹出日志窗口")
+        self.log_pop_btn.clicked.connect(self.pop_log_window)
+        log_head.addWidget(self.log_pop_btn)
+        mv.addLayout(log_head)
         self.logbox = QPlainTextEdit()
         self.logbox.setObjectName("LogBox")
         self.logbox.setReadOnly(True)
         self.logbox.setMaximumBlockCount(5000)  # 防内存无限增长
         mv.addWidget(self.logbox, 1)
+        # 控制台命令输入 (发到服务器控制台)
+        cmd_row = QHBoxLayout()
+        cmd_row.setSpacing(8)
+        self.cmd_in = QLineEdit()
+        self.cmd_in.setPlaceholderText("输入服务器命令, 回车发送 (如 say 你好 / list / stop)")
+        self.cmd_in.returnPressed.connect(self.send_cmd)
+        cmd_row.addWidget(self.cmd_in, 1)
+        send_btn = QPushButton("发送")
+        send_btn.clicked.connect(self.send_cmd)
+        cmd_row.addWidget(send_btn)
+        mv.addLayout(cmd_row)
         grid.addWidget(main, 0, 1)
 
         # 日志轮询
@@ -635,6 +806,11 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.load_backup_plan()
         self.apply_background()
+
+    def open_settings(self):
+        """软件设置对话框 (版本号/背景/备份计划/默认配置)"""
+        dlg = SettingsDialog(self)
+        dlg.exec()
 
     def _win_btn(self, glyph, idle, hover):
         """苹果交通灯样式窗口按钮"""
@@ -795,19 +971,52 @@ class MainWindow(QMainWindow):
 
     # ---------- 日志 ----------
     def append_log(self, text):
-        """按关键词着色: 错误红/警告黄/普通白 (苹果风终端配色)"""
+        """按关键词着色: 错误红/警告黄/普通白 (苹果风终端配色)
+        同时写入独立日志窗口 (若已弹出)"""
         for line in text.splitlines():
             low = line.lower()
             if re.search(r"error|exception|fail|错误|失败", low):
-                self.logbox.appendHtml(
-                    f'<span style="color:#FF6A61">{self._esc(line)}</span>')
+                html = f'<span style="color:#FF6A61">{self._esc(line)}</span>'
             elif re.search(r"warn|警告", low):
-                self.logbox.appendHtml(
-                    f'<span style="color:#FFD60A">{self._esc(line)}</span>')
+                html = f'<span style="color:#FFD60A">{self._esc(line)}</span>'
+            else:
+                html = None
+            if html:
+                self.logbox.appendHtml(html)
+                if self.log_win:
+                    self.log_win.logbox.appendHtml(html)
             else:
                 self.logbox.appendPlainText(line)
-        sb = self.logbox.verticalScrollBar()
-        sb.setValue(sb.maximum())
+                if self.log_win:
+                    self.log_win.logbox.appendPlainText(line)
+        for box in (self.logbox,) + ((self.log_win.logbox,)
+                                     if self.log_win else ()):
+            sb = box.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def pop_log_window(self):
+        """日志独立弹窗 (可以拖到副屏/单独看)"""
+        if self.log_win is None:
+            self.log_win = LogWindow(self)
+        self.log_win.show()
+        self.log_win.raise_()
+
+    def send_cmd(self):
+        """把输入的命令发到服务器控制台 (如 say/list/stop)"""
+        if not self.current:
+            return
+        line = self.cmd_in.text().strip()
+        if not line:
+            return
+        old = core.read_pid(self.current)
+        if not old or not core.is_running(old["pid"]):
+            QMessageBox.warning(self, "发送命令", "服务器未在运行")
+            return
+        if core.send_console(self.current, line):
+            self.append_log(f"> {line}")
+            self.cmd_in.clear()
+        else:
+            QMessageBox.warning(self, "发送命令", "命令发送失败")
 
     @staticmethod
     def _esc(s):
@@ -985,7 +1194,8 @@ class MainWindow(QMainWindow):
             self.bak_list.addItem(item)
 
     def check_auto_backup(self):
-        """定时备份检查 (每秒调用, last_backup 防重复)"""
+        """定时备份检查 (每秒调用; last_backup 防重复,
+        last_backup_attempt 防失败后每 1 秒疯狂重试)"""
         if not self.current:
             return
         st = core.load_settings()
@@ -997,7 +1207,11 @@ class MainWindow(QMainWindow):
             return
         cfg = core.load_cfg(self.current)
         last = (cfg or {}).get("last_backup", 0)
-        if time.time() - last >= mins * 60:
+        attempt = (cfg or {}).get("last_backup_attempt", 0)
+        # 失败后至少 10 分钟再试 (备份是重活, 不能每秒重试)
+        if time.time() - last >= mins * 60 and time.time() - attempt >= 600:
+            cfg["last_backup_attempt"] = int(time.time())
+            core.save_cfg(self.current, cfg)
             self.do_backup_now(auto=True)
 
     def do_backup_now(self, auto=False):
@@ -1008,6 +1222,7 @@ class MainWindow(QMainWindow):
         if self.bak_thread and self.bak_thread.isRunning():
             return  # 备份进行中, 防重复
         self.bak_thread = BackupThread(self.current)
+        self.bak_thread.auto = auto
         self.bak_thread.log.connect(self.append_log)
         self.bak_thread.done.connect(self.on_backup_done)
         self.bak_thread.start()
@@ -1015,7 +1230,19 @@ class MainWindow(QMainWindow):
     def on_backup_done(self, ok):
         self.refresh_backups()
         if not ok:
+            # 自动备份失败只记日志(不弹窗骚扰), 手动备份失败才弹窗
+            if getattr(self.bak_thread, "auto", False):
+                self.append_log("[备份] 自动备份失败, 10 分钟后自动重试")
+                return
             QMessageBox.warning(self, "备份失败", "存档备份失败, 请看日志")
+
+    def closeEvent(self, e):
+        """关闭软件时回收全部后台线程 (防 QThread 崩溃/关不掉)"""
+        for t in (self.bak_thread, self.start_thread, self.stop_thread):
+            if t and t.isRunning():
+                t.terminate()
+                t.wait(2000)
+        super().closeEvent(e)
 
     def restore_backup(self):
         item = self.bak_list.currentItem()
