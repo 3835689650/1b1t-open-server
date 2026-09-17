@@ -70,6 +70,7 @@ def mirror_http():
     return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
+APP_VERSION = "1.0.30"  # 发版时更新 (version 子命令显示)
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
@@ -866,8 +867,10 @@ def reuse_libraries(server_dir):
         return
 
 
-def start_mod_server(server_dir, cfg, ram):
-    """forge/neoforge: 改写内存参数, 用安装器生成的 run.sh/run.bat 启动"""
+def start_mod_server(server_dir, cfg, ram, java=None):
+    """forge/neoforge: 改写内存参数, 用安装器生成的 run.sh/run.bat 启动
+    java: 匹配到的 JDK 路径, 前置到 PATH (run.sh 里裸 java 会用 PATH 第一个,
+    本机默认 java 21 会带崩需要 25 的 NeoForge 26.x)"""
     # user_jvm_args.txt 里替换内存参数
     uj = os.path.join(server_dir, "user_jvm_args.txt")
     if os.path.exists(uj):
@@ -887,10 +890,19 @@ def start_mod_server(server_dir, cfg, ram):
         with open(uj, "w") as f:
             f.write("\n".join(out) + "\n")
     if IS_WIN:
-        run = os.path.join(server_dir, "run.bat")
+        # 把匹配的 Java 前置到 PATH, run.bat 里裸 java 才会用到它
+        javadir = os.path.dirname(java) if java else ""
+        if javadir:
+            return ["cmd", "/c",
+                    f'set "PATH={javadir};%PATH%" && run.bat nogui']
         return ["cmd", "/c", "run.bat", "nogui"]
     run = os.path.join(server_dir, "run.sh")
+    # 把匹配的 Java 前置到 PATH (run.sh 里 exec java 用 PATH 第一个)
     # exec 链: bash → run.sh → java, 减少包装进程
+    if java:
+        javadir = os.path.dirname(java)
+        return ["bash", "-c",
+                f'export PATH="{javadir}:$PATH"; exec ./run.sh nogui']
     return ["bash", "-c", f"exec ./run.sh nogui"]
 
 
@@ -1319,7 +1331,7 @@ def start_server(server_dir, cfg, wait=True):
         cmd = [java, "-Xms512M", f"-Xmx{ram}", "-jar",
                "fabric-server-launch.jar", "nogui"]
     elif stype in ("neoforge", "forge"):
-        cmd = start_mod_server(server_dir, cfg, ram)
+        cmd = start_mod_server(server_dir, cfg, ram, java)
     else:
         cmd = [java, "-Xms512M", f"-Xmx{ram}", "-jar", "server.jar", "nogui"]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=console_log,
@@ -1489,10 +1501,59 @@ def api_start(server_dir, cfg, log=print):
     return True
 
 
+def kill_orphan_java(server_dir, log=print):
+    """扫描命令行含本服务器目录的 java 进程并强杀
+    (pid.json 丢失/损坏时的孤儿进程兜底, 防端口占用)"""
+    real = os.path.realpath(server_dir)
+    targets = []
+    try:
+        if IS_WIN:
+            import subprocess as sp
+            out = sp.run(["wmic", "process", "get",
+                          "CommandLine,ProcessId"],
+                         capture_output=True, text=True,
+                         timeout=15).stdout
+            for ln in out.splitlines():
+                parts = ln.rsplit(None, 1)
+                if len(parts) == 2 and real in parts[0] \
+                        and "java" in parts[0] and parts[1].isdigit():
+                    targets.append(int(parts[1]))
+        else:
+            for pid in os.listdir("/proc"):
+                if not pid.isdigit():
+                    continue
+                try:
+                    with open(f"/proc/{pid}/cmdline", "rb") as f:
+                        cmd = f.read().decode(errors="ignore").replace(
+                            "\x00", " ")
+                except OSError:
+                    continue
+                if real in cmd and "java" in cmd:
+                    targets.append(int(pid))
+    except Exception:
+        pass
+    for pid in targets:
+        try:
+            if IS_WIN:
+                import signal as _sig
+                os.kill(pid, _sig.SIGTERM)  # Windows 上即 TerminateProcess
+            else:
+                os.killpg(pid, 9)
+            log(c(f"  已清理残留进程 PID {pid}", "yellow"))
+        except (OSError, ProcessLookupError):
+            pass
+    return targets
+
+
 def do_stop(server_dir):
     old = read_pid(server_dir)
     if not old or not is_running(old["pid"]):
-        print(c("服务器未在运行", "yellow"))
+        # pid.json 无效/丢失时仍扫描孤儿 java 进程 (用户"关不掉"根因)
+        orphans = kill_orphan_java(server_dir)
+        if orphans:
+            print(c("已清理残留进程", "yellow"))
+        else:
+            print(c("服务器未在运行", "yellow"))
         return 0
     print(f"发送 stop 命令 (PID {old['pid']})...")
     if send_console(server_dir, "stop"):
@@ -1541,6 +1602,8 @@ def do_stop(server_dir):
         os.remove(os.path.join(runtime_dir(server_dir), "pid.json"))
     except OSError:
         pass
+    # 兜底: 扫描本服务器目录的 java 孤儿进程 (pid.json 丢失时也能清干净)
+    kill_orphan_java(server_dir)
     print(c("已停止", "green"))
 
 
@@ -2202,6 +2265,7 @@ def usage():
   config <目录>        修改服务器设置(内存/端口/人数/全部项)
   settings             软件设置(默认配置/镜像目录/镜像HTTP地址)
   mirror [版本...]     预取安装包到本地镜像 ~/1b1t-mirror (之后开服不走网络)
+  version             查看软件版本号
   其他: --dry-run 只生成配置, 不下载不启动; 开服后自动接入控制台(exit 退出)
         --advanced 高级向导(逐项询问 11 项配置+全项编辑); 默认简单模式零询问""")
 
@@ -2210,6 +2274,9 @@ def main():
     args = sys.argv[1:]
     if args and args[0] in ("-h", "--help", "help"):
         usage()
+        return 0
+    if args and args[0] in ("version", "-V", "--version"):
+        print(f"{APP} v{APP_VERSION}")
         return 0
 
     cmd = "start"
