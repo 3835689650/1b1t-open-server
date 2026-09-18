@@ -146,15 +146,20 @@ def glass_effect(win):
 
 class StartThread(QThread):
     log = Signal(str)
-    done = Signal(bool)
+    done = Signal(bool, str)  # (成功?, 失败原因)
 
     def __init__(self, server_dir, cfg):
         super().__init__()
         self.server_dir, self.cfg = server_dir, cfg
 
     def run(self):
-        ok = core.api_start(self.server_dir, self.cfg, self.log.emit)
-        self.done.emit(ok)
+        ok, detail = core.api_start(self.server_dir, self.cfg,
+                                    self.log.emit)
+        if not ok and not detail:
+            # 启动进程失败: 取日志尾部关键报错行提示用户
+            detail = core._tail_error(self.server_dir) or \
+                "服务器进程启动失败, 请展开日志查看详情"
+        self.done.emit(ok, detail or "")
 
 
 class BackupThread(QThread):
@@ -1095,12 +1100,15 @@ class MainWindow(QMainWindow):
         self.start_thread.done.connect(self.on_start_done)
         self.start_thread.start()
 
-    def on_start_done(self, ok):
+    def on_start_done(self, ok, detail):
         self.start_btn.setEnabled(True)
         self.update_state()
         if not ok:
-            QMessageBox.warning(self, "启动失败",
-                                "服务器启动失败, 请看日志排查")
+            # 明确失败原因弹窗 (含日志尾部关键报错行)
+            QMessageBox.warning(
+                self, "启动失败",
+                f"服务器启动失败\n\n{detail}\n\n"
+                "完整日志见下方日志区 (可用 doctor 排查)")
 
     def on_stop(self):
         if not self.current:
