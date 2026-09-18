@@ -1436,16 +1436,35 @@ def do_start(server_dir, dry_run=False, advanced=False):
         attach_console(server_dir)
 
 
+def _tail_error(server_dir, n=8):
+    """读 console.log 尾部关键报错行, 用于启动失败提示"""
+    try:
+        path = os.path.join(runtime_dir(server_dir), "console.log")
+        if not os.path.exists(path):
+            return ""
+        with open(path, errors="ignore") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 4096))
+            lines = f.read().splitlines()
+        errs = [ln for ln in lines
+                if re.search(r"error|exception|fail|错误|失败|Unable|Could not",
+                             ln, re.I)]
+        return "\n".join(errs[-n:])
+    except OSError:
+        return ""
+
+
 def api_start(server_dir, cfg, log=print):
     """非交互启动 (GUI 用): 按 cfg 下载并启动, 日志走 log 回调
-    成功返回 True, 失败返回 False"""
+    返回 (成功?, 失败原因) 供 GUI 弹窗提示"""
     def out(msg):
         log(re.sub(r"\x1b\[[0-9;]*m", "", msg))
 
     old = read_pid(server_dir)
     if old and is_running(old["pid"]):
         out(f"[错误] 服务器已在运行 (PID {old['pid']})")
-        return False
+        return False, f"服务器已在运行 (PID {old['pid']})"
 
     info = get_version_info(cfg["version"])
     java_major = info.get("javaVersion", {}).get("majorVersion")
@@ -1468,7 +1487,7 @@ def api_start(server_dir, cfg, log=print):
             if not get_fabric_server_jar(cfg["version"], server_dir, java_bin,
                                          cfg.get("mod_version")):
                 out("[错误] Fabric 安装失败")
-                return False
+                return False, "Fabric 服务端安装失败, 请检查网络后重试"
     elif stype in ("neoforge", "forge"):
         if not os.path.exists(os.path.join(server_dir, "run.sh")) and \
            not os.path.exists(os.path.join(server_dir, "run.bat")):
@@ -1477,12 +1496,12 @@ def api_start(server_dir, cfg, log=print):
             if not get_mod_installer(cfg["version"], stype, server_dir,
                                      java_bin, cfg.get("mod_version")):
                 out(f"[错误] {stype} 安装失败")
-                return False
+                return False, f"{stype} 安装失败, 请检查网络后重试"
     else:
         jar = os.path.join(server_dir, "server.jar")
         if not get_server_jar(cfg["version"], jar, info):
             out("[错误] 服务端下载失败")
-            return False
+            return False, "服务端核心下载失败, 请检查网络后重试"
 
     out(f"正在启动: MC {cfg['version']} 端口 {cfg['port']} "
         f"内存 {cfg.get('ram', '2G')}")
@@ -1498,7 +1517,7 @@ def api_start(server_dir, cfg, log=print):
                 f"{k}={v}" for k, v in cfg["gamerules"].items()))
         else:
             out("等待就绪超时, 游戏规则未注入(可用 console 命令手动设置)")
-    return True
+    return True, None
 
 
 def kill_orphan_java(server_dir, log=print):
