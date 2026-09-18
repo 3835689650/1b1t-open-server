@@ -576,9 +576,25 @@ class MainWindow(QMainWindow):
         sv = QVBoxLayout(side)
         sv.setContentsMargins(18, 22, 18, 16)
         sv.setSpacing(12)
+        # logo 行: 红绿灯窗口控制(始终可见) + 1b1t 标题
+        logo_row = QHBoxLayout()
+        logo_row.setSpacing(8)
+        self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
+        self.win_close.clicked.connect(self.close)
+        self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
+        self.win_min.clicked.connect(self.showMinimized)
+        self.win_max = self._win_btn("＋", "#28C840", "#30D158")
+        self.win_max.clicked.connect(self.toggle_max)
+        self.win_close.setToolTip("关闭")
+        self.win_min.setToolTip("最小化")
+        self.win_max.setToolTip("最大化/还原")
+        for b in (self.win_close, self.win_min, self.win_max):
+            logo_row.addWidget(b)
         logo = QLabel("1b1t")
         logo.setObjectName("Logo")
-        sv.addWidget(logo)
+        logo_row.addWidget(logo)
+        logo_row.addStretch(1)
+        sv.addLayout(logo_row)
         tag = QLabel("Minecraft 一键开服")
         tag.setObjectName("Tagline")
         sv.addWidget(tag)
@@ -598,32 +614,51 @@ class MainWindow(QMainWindow):
         sv.addWidget(set_btn)
         grid.addWidget(side, 0, 0)
 
+        # ---- 主页 (未选服务器时显示) ----
+        self.home_page = QWidget()
+        hv = QVBoxLayout(self.home_page)
+        hv.setContentsMargins(26, 40, 26, 20)
+        hv.setSpacing(14)
+        home_title = QLabel("1b1t 开服工具")
+        home_title.setStyleSheet(
+            f"font-size:28px;font-weight:700;color:{TEXT};"
+            "font-family:\"SF Pro Display\",\"PingFang SC\",sans-serif;")
+        hv.addWidget(home_title)
+        home_sub = QLabel("Minecraft 一键开服 · 图形 + 命令行")
+        home_sub.setStyleSheet(f"color:{DIM};font-size:14px")
+        hv.addWidget(home_sub)
+        self.home_stats = QLabel("")
+        self.home_stats.setStyleSheet(
+            f"color:{DIM};font-size:13px;margin-top:4px")
+        hv.addWidget(self.home_stats)
+        hv.addSpacing(10)
+        # 快捷入口卡片
+        for text, icon, handler in (
+                ("新建服务器", "＋", self.new_server),
+                ("打开服务器目录", "📁", self.open_servers_dir),
+                ("手动开服教程", "📖", self.open_docs),
+                ("软件设置", "⚙", self.open_settings)):
+            card = QPushButton(f"{icon}  {text}")
+            card.setFixedHeight(44)
+            card.clicked.connect(handler)
+            hv.addWidget(card)
+        hv.addStretch(1)
+        grid.addWidget(self.home_page, 0, 1)
+
         # ---- 右栏 ----
         main = QWidget()
+        self.main_page = main
         mv = QVBoxLayout(main)
         mv.setContentsMargins(26, 24, 26, 20)
         mv.setSpacing(12)
 
-        # 头部: 窗口控制(红黄绿) + 名字 + 副标题 + 状态灯
+        # 头部: 名字 + 副标题 + 状态灯 (红绿灯已移到侧边栏)
         head = QHBoxLayout()
         headv = QVBoxLayout()
         headv.setSpacing(2)
-        title_row = QHBoxLayout()
-        title_row.setSpacing(6)
         self.name_lab = QLabel("选择或新建服务器")
         self.name_lab.setObjectName("ServerName")
-        title_row.addWidget(self.name_lab)
-        # 苹果风窗口控制按钮 (关闭/最小化)
-        self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
-        self.win_close.clicked.connect(self.close)
-        self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
-        self.win_min.clicked.connect(self.showMinimized)
-        self.win_close.setToolTip("关闭")
-        self.win_min.setToolTip("最小化")
-        title_row.addStretch(1)
-        title_row.addWidget(self.win_min)
-        title_row.addWidget(self.win_close)
-        headv.addLayout(title_row)
+        headv.addWidget(self.name_lab)
         self.sub_lab = QLabel("在左侧选择服务器开始管理")
         self.sub_lab.setObjectName("ServerSub")
         headv.addWidget(self.sub_lab)
@@ -811,11 +846,50 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.load_backup_plan()
         self.apply_background()
+        # 初始显示主页 (未选服务器)
+        self.main_page.hide()
+        self.home_page.show()
+        self.refresh_home_stats()
 
     def open_settings(self):
         """软件设置对话框 (版本号/背景/备份计划/默认配置)"""
         dlg = SettingsDialog(self)
         dlg.exec()
+
+    def open_servers_dir(self):
+        """文件管理器打开服务器所在目录"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            os.path.expanduser("~")))
+
+    def open_docs(self):
+        """浏览器打开手动开服教程"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl("https://www.1b1t.cn/docs/"))
+
+    def refresh_home_stats(self):
+        """主页统计: 服务器总数 / 运行中数量"""
+        dirs = core.find_servers()
+        running = 0
+        for d in dirs:
+            old = core.read_pid(d)
+            if old and core.is_running(old["pid"]):
+                running += 1
+        self.home_stats.setText(
+            f"共 {len(dirs)} 个服务器 · {running} 个运行中 · "
+            f"v{core.APP_VERSION}")
+
+    def toggle_max(self):
+        """无边框窗口安全最大化: 记录原位置, 铺满屏幕工作区, 再点还原"""
+        if getattr(self, "_maxed", False):
+            self.setGeometry(self._normal_geo)
+            self._maxed = False
+        else:
+            self._normal_geo = self.geometry()
+            self._maxed = True
+            self.setGeometry(QApplication.primaryScreen().availableGeometry())
 
     def _win_btn(self, glyph, idle, hover):
         """苹果交通灯样式窗口按钮"""
@@ -919,9 +993,18 @@ class MainWindow(QMainWindow):
 
     def on_select(self, item, prev):
         if item is None:
+            # 取消选择 → 回主页
+            self.current = None
+            self.main_page.hide()
+            self.home_page.show()
+            self.refresh_home_stats()
+            self.backup_card.hide()
+            self.update_state()
             return
         d = item.data(Qt.UserRole)
         self.current = d
+        self.home_page.hide()
+        self.main_page.show()
         self.log_offset = 0
         self.logbox.clear()
         cfg = core.load_cfg(d)
