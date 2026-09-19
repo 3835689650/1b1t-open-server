@@ -266,12 +266,18 @@ api_put() { # 本地文件 仓库路径 分支
     fi
 }
 # main 分支全量文件 (脚本/文档/apt 目录/三平台包)
+# 注意: find 输出不带目录前缀, 必须手动加回 apt/ download/ 前缀,
+# 否则后面 case download/* 的版本过滤永远不生效, 且存在检测会误检根目录
 MAIN_FILES=()
 for f in 1b1t gui.py assets/logo.jpeg assets/1b1t.png README.md LICENSE \
-         CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg \
-         $(cd apt && find . -type f | sed 's|^\./||') \
-         $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
+         CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg; do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
+done
+for f in $(cd apt && find . -type f | sed 's|^\./||'); do
+    [ -f "$ROOT/apt/$f" ] && MAIN_FILES+=("apt/$f")
+done
+for f in $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
+    [ -f "$ROOT/download/$f" ] && MAIN_FILES+=("download/$f")
 done
 # github.com 被墙: git push 会挂几分钟, timeout 快速失败走 API
 if git add -A && git commit -m "release $VER" --quiet 2>/dev/null \
