@@ -259,13 +259,15 @@ api_put() { # 本地文件 仓库路径 分支
 }
 # main 分支全量文件 (脚本/文档/apt 目录/三平台包)
 MAIN_FILES=()
-for f in 1b1t README.md LICENSE CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg \
+for f in 1b1t gui.py README.md LICENSE CHANGELOG.md build-apt.sh \
+         1b1t-apt-key.gpg \
          $(cd apt && find . -type f | sed 's|^\./||') \
          $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
 done
+# github.com 被墙: git push 会挂几分钟, timeout 快速失败走 API
 if git add -A && git commit -m "release $VER" --quiet 2>/dev/null \
-   && git push origin main --quiet 2>/dev/null; then
+   && timeout 25 git push origin main --quiet 2>/dev/null; then
     echo "  main: git push 成功"
 else
     echo "  main: git push 失败, 走 API"
@@ -275,7 +277,7 @@ else
             download/*)
                 [[ "$f" == *"_${VER}_"* ]] || continue ;;
         esac
-        api_put "$ROOT/$f" "$f" main
+        api_put "$ROOT/$f" "$f" main || true
     done
 fi
 # gh-pages 只放 apt/ 目录内容
@@ -284,27 +286,28 @@ if git worktree add -B gh-pages "$WORK/pages" --quiet 2>/dev/null; then
     find "$WORK/pages" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
     cp -r "$ROOT"/apt/. "$WORK/pages/"
     if git -C "$WORK/pages" add -A && git -C "$WORK/pages" commit -m "apt $VER" --quiet \
-       && git -C "$WORK/pages" push -f origin gh-pages --quiet 2>/dev/null; then
+       && timeout 25 git -C "$WORK/pages" push -f origin gh-pages \
+            --quiet 2>/dev/null; then
         echo "  gh-pages: git push 成功"
     else
         echo "  gh-pages: git push 失败, 走 API"
         for f in $(cd apt && find . -type f | sed 's|^\./||'); do
-            api_put "$ROOT/apt/$f" "$f" gh-pages
+            api_put "$ROOT/apt/$f" "$f" gh-pages || true
         done
     fi
     git worktree remove "$WORK/pages" --force
 else
     echo "  gh-pages: git push 失败, 走 API"
     for f in $(cd apt && find . -type f | sed 's|^\./||'); do
-        api_put "$ROOT/apt/$f" "$f" gh-pages
+        api_put "$ROOT/apt/$f" "$f" gh-pages || true
     done
 fi
 
 echo "==> 5/5 更新官网更新日志并部署"
 if [ -f "$SITE_SRC" ]; then
-    python3 - "$ROOT" "$SITE_SRC" <<'PY'
+    python3 - "$ROOT" "$SITE_SRC" "$VER" <<'PY'
 import re, sys
-root, site = sys.argv[1], sys.argv[2]
+root, site, ver = sys.argv[1], sys.argv[2], sys.argv[3]
 cl = open(root + "/CHANGELOG.md").read()
 entries = re.findall(r"^## (v[\d.]+) - (\d{4}-\d{2}-\d{2})\n(.*?)(?=^## |\Z)", cl, re.S | re.M)
 def render(ver, date, body):
@@ -325,9 +328,9 @@ page = re.sub(
     page, flags=re.S)
 # 顶部版本徽章同步为实际最新版本号 (整合版 changelog 条目名 ≠ 实际版本)
 if entries:
-    page = re.sub(r'(badge">)v+[\d.]+', r"\1v$VER", page)
+    page = re.sub(r'(badge">)v+[\d.]+', r"\1v" + ver, page)
 open(site, "w").write(page)
-print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v$VER")
+print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v{ver}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
     [ -f "$DOCS_SRC" ] && sudo mkdir -p "$(dirname "$SITE_DST")/docs" \
