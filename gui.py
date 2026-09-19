@@ -78,6 +78,11 @@ QPushButton#Danger:disabled {{ background: rgba(255,69,58,80);
 QPushButton#WinBtn {{ background: transparent; border: none; border-radius: 8px;
     padding: 0; font-size: 13px; font-weight: 700; }}
 QPushButton#WinBtn:hover {{ background: rgba(255,255,255,24); }}
+QPushButton#NavBtn {{ background: transparent; border: none; border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; font-weight: 500; text-align: left; }}
+QPushButton#NavBtn:hover {{ background: rgba(255,255,255,16); }}
+QPushButton#NavBtn:checked {{ background: rgba(10,132,255,40);
+    color: white; font-weight: 600; }}
 QLineEdit, QComboBox {{
     background: rgba(255,255,255,14); border: 1px solid rgba(255,255,255,28);
     border-radius: 10px; padding: 8px 12px; font-size: 13px;
@@ -598,6 +603,20 @@ class MainWindow(QMainWindow):
         tag = QLabel("Minecraft 一键开服")
         tag.setObjectName("Tagline")
         sv.addWidget(tag)
+        # ---- 侧边栏导航: 主页 / 服务器 / 设置 ----
+        self.nav_btns = {}
+        for key, name in (("home", "🏠 主页"),
+                          ("servers", "🖥 服务器"),
+                          ("settings", "⚙ 设置")):
+            b = QPushButton(name)
+            b.setObjectName("NavBtn")
+            b.setCheckable(True)
+            b.clicked.connect(
+                lambda _c, k=key: self.nav_to(k))
+            sv.addWidget(b)
+            self.nav_btns[key] = b
+        self.nav_btns["home"].setChecked(True)
+        # 新建 + 服务器列表 (点"服务器"导航时高亮)
         new_btn = QPushButton("＋ 新建服务器")
         new_btn.setObjectName("Primary")
         new_btn.clicked.connect(self.new_server)
@@ -605,16 +624,13 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self.on_select)
         sv.addWidget(self.list, 1)
-        # 侧边栏底部: 版本号 + 设置入口
+        # 侧边栏底部: 版本号 (设置入口只在导航)
         ver_lab = QLabel(f"v{core.APP_VERSION}")
         ver_lab.setStyleSheet(f"color:{DIM};font-size:11px")
         sv.addWidget(ver_lab)
-        set_btn = QPushButton("⚙ 设置")
-        set_btn.clicked.connect(self.open_settings)
-        sv.addWidget(set_btn)
         grid.addWidget(side, 0, 0)
 
-        # ---- 主页 (未选服务器时显示) ----
+        # ---- 主页 ----
         self.home_page = QWidget()
         hv = QVBoxLayout(self.home_page)
         hv.setContentsMargins(26, 40, 26, 20)
@@ -632,18 +648,16 @@ class MainWindow(QMainWindow):
             f"color:{DIM};font-size:13px;margin-top:4px")
         hv.addWidget(self.home_stats)
         hv.addSpacing(10)
-        # 快捷入口卡片
+        # 快捷入口卡片 (设置入口只在侧边栏导航)
         for text, icon, handler in (
                 ("新建服务器", "＋", self.new_server),
                 ("打开服务器目录", "📁", self.open_servers_dir),
-                ("手动开服教程", "📖", self.open_docs),
-                ("软件设置", "⚙", self.open_settings)):
+                ("手动开服教程", "📖", self.open_docs)):
             card = QPushButton(f"{icon}  {text}")
             card.setFixedHeight(44)
             card.clicked.connect(handler)
             hv.addWidget(card)
         hv.addStretch(1)
-        grid.addWidget(self.home_page, 0, 1)
 
         # ---- 右栏 ----
         main = QWidget()
@@ -836,7 +850,13 @@ class MainWindow(QMainWindow):
         send_btn.clicked.connect(self.send_cmd)
         cmd_row.addWidget(send_btn)
         mv.addLayout(cmd_row)
-        grid.addWidget(main, 0, 1)
+        # 右侧用 QStackedWidget 切换主页/详情 (可靠, 无 z-order 问题)
+        from PySide6.QtWidgets import QStackedWidget
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.home_page)  # index 0
+        self.stack.addWidget(main)            # index 1
+        self.main_page = main
+        grid.addWidget(self.stack, 0, 1)
 
         # 日志轮询
         self.timer = QTimer(self)
@@ -846,9 +866,8 @@ class MainWindow(QMainWindow):
         self.refresh_list()
         self.load_backup_plan()
         self.apply_background()
-        # 初始显示主页 (未选服务器)
-        self.main_page.hide()
-        self.home_page.show()
+        # 初始显示主页
+        self.stack.setCurrentIndex(0)
         self.refresh_home_stats()
 
     def open_settings(self):
@@ -991,20 +1010,42 @@ class MainWindow(QMainWindow):
                 self.list.setCurrentItem(item)
         self.list.blockSignals(False)
 
+    def nav_to(self, key):
+        """侧边栏导航: 主页/服务器/设置"""
+        for k, b in self.nav_btns.items():
+            b.setChecked(k == key)
+        if key == "home":
+            # 只切视图, 保留服务器选择 (点"服务器"导航可回来)
+            self.list.blockSignals(True)
+            self.list.clearSelection()
+            self.list.blockSignals(False)
+            self.stack.setCurrentIndex(0)
+            self.refresh_home_stats()
+            self.update_state()
+        elif key == "servers":
+            # 聚焦服务器列表: 有选中项进详情, 否则留在主页
+            if self.current:
+                self.stack.setCurrentIndex(1)
+            else:
+                self.stack.setCurrentIndex(0)
+                self.refresh_home_stats()
+        elif key == "settings":
+            self.open_settings()
+
     def on_select(self, item, prev):
         if item is None:
             # 取消选择 → 回主页
             self.current = None
-            self.main_page.hide()
-            self.home_page.show()
+            self.stack.setCurrentIndex(0)
+            self.nav_btns["home"].setChecked(True)
             self.refresh_home_stats()
             self.backup_card.hide()
             self.update_state()
             return
         d = item.data(Qt.UserRole)
         self.current = d
-        self.home_page.hide()
-        self.main_page.show()
+        self.stack.setCurrentIndex(1)
+        self.nav_btns["servers"].setChecked(True)
         self.log_offset = 0
         self.logbox.clear()
         cfg = core.load_cfg(d)
