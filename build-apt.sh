@@ -310,7 +310,7 @@ entries = re.findall(r"^## (v[\d.]+) - (\d{4}-\d{2}-\d{2})\n(.*?)(?=^## |\Z)", c
 def render(ver, date, body):
     # 每个版本一个可展开的卡片, 点击查看详细变更
     html = ['<details class="ver-card">',
-            f'<summary><b>{ver}</b><span class="vdate">{date}</span></summary>']
+            f'<summary><b>{ver}</b> <span class="vdate">{date}</span></summary>']
     for m in re.finditer(r"^### (\S+)\n((?:- .*\n?)+)", body, re.M):
         items = "".join(f"<li>{i[2:]}</li>" for i in m.group(2).strip().splitlines())
         html.append(f'<div class="tag">{m.group(1)}</div><ul>{items}</ul>')
@@ -323,11 +323,11 @@ assert re.search(pat, page, re.S), "官网缺少 CHANGELOG_START/END 标记"
 page = re.sub(
     pat, "<!-- CHANGELOG_START -->\n" + rendered + "\n  <!-- CHANGELOG_END -->",
     page, flags=re.S)
-# 顶部版本徽章同步为最新版本 (entries[0][0] 已含 v 前缀)
+# 顶部版本徽章同步为实际最新版本号 (整合版 changelog 条目名 ≠ 实际版本)
 if entries:
-    page = re.sub(r'(badge">)v+[\d.]+', rf"\1{entries[0][0]}", page)
+    page = re.sub(r'(badge">)v+[\d.]+', r"\1v$VER", page)
 open(site, "w").write(page)
-print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 {entries[0][0]}")
+print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v$VER")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
     [ -f "$DOCS_SRC" ] && sudo mkdir -p "$(dirname "$SITE_DST")/docs" \
