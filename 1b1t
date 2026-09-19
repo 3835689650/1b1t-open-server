@@ -70,7 +70,7 @@ def mirror_http():
     return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
-APP_VERSION = "1.0.37"  # 发版时更新 (version 子命令显示)
+APP_VERSION = "1.0.38"  # 发版时更新 (version 子命令显示)
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
@@ -78,87 +78,88 @@ BMCL_SERVER_JAR = "https://bmclapi2.bangbang93.com/version/{vid}/server"
 RUNTIME_DIR = ".1b1t-open-server"      # 服务器目录下: pid/config/console.log
 IS_WIN = (os.name == "nt")
 
-# stop 后后台收尾进程: 等服务器退出 → 必要时强杀进程组 → 杀 keeper → 删 pid.json
-# (attach 里输 stop 后工具立即退出, 收尾交给这个分离进程, 保证关得干净)
-CLEANUP_CODE = r"""
-import json, os, signal, sys, time
-server_dir = sys.argv[1]
-rt = os.path.join(server_dir, ".1b1t-open-server")
+# ---------- 子进程入口 (keeper / 收尾) ----------
+# 冻结打包后 sys.executable 是自身二进制, "二进制 -c 代码" 跑不起来,
+# 必须走 __sub 子命令 (见 main); 源码运行则用解释器跑本文件
 
-def is_running(pid):
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+def sub_cmd(name, arg):
+    """__sub 子进程启动命令: 冻结版=自身二进制, 源码版=解释器跑本文件"""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "__sub", name, str(arg)]
+    return [sys.executable, os.path.abspath(__file__), "__sub", name, str(arg)]
 
-def load_pid():
-    try:
-        with open(os.path.join(rt, "pid.json")) as f:
-            return json.load(f)
-    except Exception:
-        return None
 
-for _ in range(240):  # 最多等 4 分钟
-    info = load_pid()
-    if not info or not is_running(info["pid"]):
-        break
-    time.sleep(1)
-info = load_pid()
-if info and is_running(info["pid"]):  # 还没退, 强杀整个进程组
-    try:
-        os.killpg(info["pid"], 9)
-    except (OSError, AttributeError):
-        try:
-            os.kill(info["pid"], 9)
-        except OSError:
-            pass
-    time.sleep(2)
-if info:
-    keeper = info.get("keeper")
-    if keeper and is_running(keeper):
-        try:
-            os.kill(keeper, signal.SIGTERM)
-        except OSError:
-            pass
-try:
-    os.remove(os.path.join(rt, "pid.json"))
-except OSError:
-    pass
-"""
-
-# 控制台 keeper: 持有 java stdin 写端, 监听本地 TCP 转发命令 (Linux/Windows/macOS 通用)
-# 注意: fd0 是管道写端(O_WRONLY), sys.stdin 会初始化失败, 必须用 os.write(0, ...)
-KEEPER_CODE = r"""
-import os, select, socket, sys
-srv = socket.socket()
-srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-srv.bind(("127.0.0.1", int(sys.argv[1])))
-srv.listen(4)
-try:  # Linux/macOS: poll 管道写端, java 退出(读端关闭)时 POLLERR 触发自杀
-    poller = select.poll()
-    poller.register(0, select.POLLERR | select.POLLHUP)
-except (AttributeError, OSError):
-    poller = None
-while True:
-    r, _, _ = select.select([srv], [], [], 0.2)
-    if poller is not None:
-        for _fd, ev in poller.poll(0):
-            if ev & (select.POLLERR | select.POLLHUP):
+def run_keeper(port):
+    """__sub keeper 子进程入口: 持有 java stdin 写端 + 监听本地 TCP 转发控制台命令
+    注意: fd0 是管道写端(O_WRONLY), sys.stdin 会初始化失败, 必须用 os.write(0, ...)"""
+    import socket as _s, select as _sel
+    port = int(port)
+    srv = _s.socket()
+    srv.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", port))
+    srv.listen(4)
+    try:  # Linux/macOS: poll 管道写端, java 退出(读端关闭)时 POLLERR 触发自杀
+        poller = _sel.poll()
+        poller.register(0, _sel.POLLERR | _sel.POLLHUP)
+    except (AttributeError, OSError):
+        poller = None
+    while True:
+        r, _, _ = _sel.select([srv], [], [], 0.2)
+        if poller is not None:
+            for _fd, ev in poller.poll(0):
+                if ev & (_sel.POLLERR | _sel.POLLHUP):
+                    sys.exit(0)  # java 已退出, 管道断裂
+        if not r:
+            continue
+        c, _ = srv.accept()
+        data = c.recv(65536).decode("utf-8", "ignore")
+        c.close()
+        for line in data.splitlines():
+            try:
+                os.write(0, (line + "\n").encode())
+            except OSError:
                 sys.exit(0)  # java 已退出, 管道断裂
-    if not r:
-        continue
-    c, _ = srv.accept()
-    data = c.recv(65536).decode("utf-8", "ignore")
-    c.close()
-    for line in data.splitlines():
+
+
+def run_cleanup(server_dir):
+    """__sub cleanup 子进程入口: 等服务器退出 → 必要时强杀进程组 → 杀 keeper → 删 pid.json
+    (attach 里输 stop 后工具立即退出, 收尾交给这个分离进程, 保证关得干净)"""
+    import signal
+    rt = os.path.join(server_dir, RUNTIME_DIR)
+
+    def load_pid():
         try:
-            os.write(0, (line + "\n").encode())
-        except OSError:
-            sys.exit(0)  # java 已退出, 管道断裂
-"""
+            with open(os.path.join(rt, "pid.json")) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    for _ in range(240):  # 最多等 4 分钟
+        info = load_pid()
+        if not info or not is_running(info["pid"]):
+            break
+        time.sleep(1)
+    info = load_pid()
+    if info and is_running(info["pid"]):  # 还没退, 强杀整个进程组
+        try:
+            os.killpg(info["pid"], 9)
+        except (OSError, AttributeError):
+            try:
+                os.kill(info["pid"], 9)
+            except OSError:
+                pass
+        time.sleep(2)
+    if info:
+        keeper = info.get("keeper")
+        if keeper and is_running(keeper):
+            try:
+                os.kill(keeper, signal.SIGTERM)
+            except OSError:
+                pass
+    try:
+        os.remove(os.path.join(rt, "pid.json"))
+    except OSError:
+        pass
 
 # 启动横幅 (figlet standard 字体)
 BANNER = r"""
@@ -1063,7 +1064,7 @@ def attach_console(server_dir):
                         sent_stop = True
                         flags = {"start_new_session": True} if not IS_WIN else {}
                         subprocess.Popen(
-                            [sys.executable, "-c", CLEANUP_CODE, server_dir],
+                            sub_cmd("cleanup", server_dir),
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, **flags)
                         print(c("已发送关服命令, 服务器在后台保存退出, 回 shell...",
@@ -1340,7 +1341,7 @@ def start_server(server_dir, cfg, wait=True):
     # keeper: 持有 java stdin 写端 + 监听本地 TCP 转发控制台命令
     port = free_port()
     keeper = subprocess.Popen(
-        [sys.executable, "-c", KEEPER_CODE, str(port)],
+        sub_cmd("keeper", port),
         stdin=p.stdin, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         **flags)
     p.stdin.close()  # 写端只由 keeper 持有, java 永远不会读到 EOF
@@ -2296,6 +2297,14 @@ def main():
         return 0
     if args and args[0] in ("version", "-V", "--version"):
         print(f"{APP} v{APP_VERSION}")
+        return 0
+    if args and args[0] == "__sub":
+        # 内部子进程入口: keeper(TCP 控制台转发) / cleanup(stop 收尾)
+        # 冻结打包后不能用 "二进制 -c 代码", 统一走 __sub
+        if len(args) > 2 and args[1] == "keeper":
+            run_keeper(args[2])
+        elif len(args) > 2 and args[1] == "cleanup":
+            run_cleanup(args[2])
         return 0
 
     cmd = "start"
