@@ -1,0 +1,31 @@
+JVM info: Debian - 25.0.4.1 - 25.0.4.1+1-1-deb13u1-Debian
+java.net.preferIPv4Stack=true
+Current Time: 19/09/2026 15:54:43
+Option                                  Description                           
+------                                  -----------                           
+--debug                                 Run in debug mode -- don't delete any 
+                                          files                               
+--fat, --fat-installer, --generate-fat  Generate a fat installer jar (default:
+  [File]                                  /home/yu/￦ﾡﾌ￩ﾝﾢ/neoforge-21.1.249-      
+                                          installer-fat.jar)                  
+--fat-include-installer-libs            Include the installer libraries in the
+                                          fat installer                       
+--fat-include-minecraft                 Include the Minecraft client / server 
+                                          jar in the fat installer            
+--fat-include-minecraft-libs            Include the Minecraft libraries in the
+                                          fat installer                       
+--fat-offline, --gen-offline, --        Generate an online fat installer      
+  generate-offline, --gf                                                      
+-h, --help                              Help with this installer              
+--install-client, --installClient       Install a client to the specified     
+  [File]                                  directory, defaulting to the MC     
+                                          installation directory (default:    
+                                          /home/yu/.minecraft)                
+--install-server, --installServer       Install a server to the current       
+  [File]                                  directory (default: .)              
+--mirror <URL>                          Use a specific mirror URL             
+--offline                               Don't attempt any network calls       
+--server-jar, --server-starter, --      Download the server starter jar for   
+  server.jar                              arg-free executable launches        
+--skip-hash-check                       Skips the hash check when verifying   
+                                          outputs                             
