@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
                                QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QRadioButton, QComboBox, QVBoxLayout, QWidget,
-                               QGridLayout, QButtonGroup)
+                               QGridLayout, QButtonGroup, QStackedWidget,
+                               QScrollArea)
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -125,6 +126,14 @@ QRadioButton {{ font-size: 13px; spacing: 6px; }}
 QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px;
     border: 1px solid rgba(255,255,255,60); background: transparent; }}
 QRadioButton::indicator:checked {{ background: {ACCENT}; border: none; }}
+QPushButton#SegBtn {{ background: rgba(255,255,255,12); border: none;
+    border-radius: 10px; padding: 5px 14px; color: {DIM}; font-size: 12px; }}
+QPushButton#SegBtn:checked {{ background: rgba(10,132,255,60);
+    color: {TEXT}; }}
+QPlainTextEdit {{ background: rgba(0,0,0,72);
+    border: 1px solid rgba(255,255,255,20); border-radius: 10px;
+    padding: 8px; font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px; }}
 """
 
 
@@ -720,11 +729,32 @@ class MainWindow(QMainWindow):
         btns.addStretch(1)
         mv.addLayout(btns)
 
-        # 设置卡片
+        # 设置卡片: 简单(快捷项) / 高级(server.properties 全部项)
+        set_head = QHBoxLayout()
         set_title = QLabel("服务器设置")
         set_title.setObjectName("CardTitle")
-        mv.addWidget(set_title)
-        form = QGridLayout()
+        set_head.addWidget(set_title)
+        set_head.addStretch(1)
+        self.set_simple_btn = QPushButton("简单")
+        self.set_adv_btn = QPushButton("高级")
+        for b in (self.set_simple_btn, self.set_adv_btn):
+            b.setCheckable(True)
+            b.setObjectName("SegBtn")
+            set_head.addWidget(b)
+        self.set_simple_btn.setChecked(True)
+        self.set_simple_btn.clicked.connect(lambda: self.switch_set_mode(0))
+        self.set_adv_btn.clicked.connect(lambda: self.switch_set_mode(1))
+        self.run_hint = QLabel("⚠ 运行中: 请先停止服务器再修改设置")
+        self.run_hint.setStyleSheet(f"color:{YELLOW};font-size:12px")
+        self.run_hint.hide()
+        set_head.addWidget(self.run_hint)
+        mv.addLayout(set_head)
+
+        # 简单模式: 快捷配置表单
+        self.set_stack = QStackedWidget()
+        simple_w = QWidget()
+        form = QGridLayout(simple_w)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
         form.addWidget(QLabel("服务器名字"), 0, 0)
@@ -746,22 +776,31 @@ class MainWindow(QMainWindow):
         self.cb_ram.addItems(["2G", "4G", "8G", "16G", "32G"])
         self.cb_ram.setEditable(True)
         form.addWidget(self.cb_ram, 2, 1)
-        save_btn = QPushButton("保存设置")
-        save_btn.clicked.connect(self.save_settings)
-        form.addWidget(save_btn, 2, 3)
-        form.addWidget(QLabel("自定义背景"), 3, 0)
-        bgrow = QHBoxLayout()
-        self.bg_name = QLabel("(无, 深色背景)")
-        self.bg_name.setStyleSheet(f"color:{DIM};font-size:12px")
-        bgrow.addWidget(self.bg_name, 1)
-        pick_bg = QPushButton("选择图片")
-        pick_bg.clicked.connect(self.pick_background)
-        clear_bg = QPushButton("清除")
-        clear_bg.clicked.connect(self.clear_background)
-        bgrow.addWidget(pick_bg)
-        bgrow.addWidget(clear_bg)
-        form.addLayout(bgrow, 3, 1, 1, 3)
-        mv.addLayout(form)
+        self.save_btn = QPushButton("保存设置")
+        self.save_btn.clicked.connect(self.save_settings)
+        form.addWidget(self.save_btn, 2, 3)
+        self.set_stack.addWidget(simple_w)
+
+        # 高级模式: 编辑 server.properties 全部项 (key=value)
+        adv_w = QWidget()
+        av = QVBoxLayout(adv_w)
+        av.setContentsMargins(0, 0, 0, 0)
+        av.setSpacing(8)
+        adv_tip = QLabel("编辑 server.properties 全部配置项"
+                         " (key=value, # 开头的注释行会被忽略)")
+        adv_tip.setStyleSheet(f"color:{DIM};font-size:12px")
+        av.addWidget(adv_tip)
+        self.ed_props = QPlainTextEdit()
+        self.ed_props.setMinimumHeight(240)
+        av.addWidget(self.ed_props)
+        adv_save_row = QHBoxLayout()
+        adv_save_row.addStretch(1)
+        self.adv_save_btn = QPushButton("保存高级配置")
+        self.adv_save_btn.clicked.connect(self.save_settings_advanced)
+        adv_save_row.addWidget(self.adv_save_btn)
+        av.addLayout(adv_save_row)
+        self.set_stack.addWidget(adv_w)
+        mv.addWidget(self.set_stack)
 
         # 存档备份
         self.backup_card = QWidget()
@@ -853,7 +892,6 @@ class MainWindow(QMainWindow):
         mv.addLayout(cmd_row)
         # 右侧用 QStackedWidget 切换主页/详情 (可靠, 无 z-order 问题)
         # 详情页包进滚动区: 固定窗口下设置表单不被挤压成 6px
-        from PySide6.QtWidgets import QStackedWidget, QScrollArea
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -972,11 +1010,13 @@ class MainWindow(QMainWindow):
                     " border-radius: 20px;"
                     " border: 1px solid rgba(255,255,255,30);"
                     " border-top: 1px solid rgba(255,255,255,60); }")
-                self.bg_name.setText(os.path.basename(bg))
+                if hasattr(self, "bg_name"):
+                    self.bg_name.setText(os.path.basename(bg))
                 return
         self.bg_label.hide()
         self.centralWidget().setStyleSheet("")  # 恢复默认不透明深色
-        self.bg_name.setText("(无, 深色背景)")
+        if hasattr(self, "bg_name"):
+            self.bg_name.setText("(无, 深色背景)")
 
     def pick_background(self):
         f, _ = QFileDialog.getOpenFileName(
@@ -1015,6 +1055,10 @@ class MainWindow(QMainWindow):
             if select == d:
                 self.list.setCurrentItem(item)
         self.list.blockSignals(False)
+        # 信号被屏蔽时 setCurrentItem 不触发 on_select,
+        # 显式补一次 (否则新建后点侧边栏该服务器进不了详情页)
+        if select:
+            self.on_select(self.list.currentItem(), None)
 
     def nav_to(self, key):
         """侧边栏主页入口: 切回主页视图 (保留服务器选择)"""
@@ -1086,6 +1130,10 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.restart_btn.setEnabled(True)
+            # 运行中禁止改配置: 提示 + 保存按钮禁用 (停服后可改)
+            self.run_hint.show()
+            self.save_btn.setEnabled(False)
+            self.adv_save_btn.setEnabled(False)
         else:
             self.dot.setStyleSheet(f"color:{DIM};font-size:16px")
             self.state_lab.setText("已停止")
@@ -1093,6 +1141,9 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(self.current is not None)
             self.stop_btn.setEnabled(False)
             self.restart_btn.setEnabled(False)
+            self.run_hint.hide()
+            self.save_btn.setEnabled(self.current is not None)
+            self.adv_save_btn.setEnabled(self.current is not None)
 
     # ---------- 日志 ----------
     def append_log(self, text):
@@ -1483,8 +1534,64 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(d))
 
     # ---------- 保存设置 ----------
+    def _is_running(self):
+        """当前服务器是否在运行 (停服后才能改配置)"""
+        if not self.current:
+            return False
+        old = core.read_pid(self.current)
+        return bool(old and core.is_running(old["pid"]))
+
+    def _need_stop_warn(self):
+        """运行中修改配置 → 提示先停服, 返回 True 表示要拦截"""
+        if self._is_running():
+            QMessageBox.warning(
+                self, "服务器运行中",
+                "请先停止服务器再修改设置\n\n"
+                "配置在服务器下次启动时生效")
+            return True
+        return False
+
+    def switch_set_mode(self, idx):
+        """设置卡片 简单/高级 切换; 切到高级时载入全部配置项"""
+        self.set_simple_btn.setChecked(idx == 0)
+        self.set_adv_btn.setChecked(idx == 1)
+        self.set_stack.setCurrentIndex(idx)
+        if idx == 1 and self.current:
+            cfg = core.load_cfg(self.current) or {}
+            self.ed_props.setPlainText(core.render_properties(
+                cfg.get("props", {})))
+
+    def save_settings_advanced(self):
+        """高级模式保存: 解析 key=value 全部项写回 server.properties"""
+        if not self.current:
+            return
+        if self._need_stop_warn():
+            return
+        props = {}
+        for line in self.ed_props.toPlainText().splitlines():
+            line = line.split("#")[0].strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                props[k.strip()] = v.strip()
+        if not props:
+            QMessageBox.warning(self, "参数错误",
+                                "没有解析到任何配置项 (格式: key=value)")
+            return
+        cfg = core.load_cfg(self.current) or {}
+        cfg["props"] = props
+        if props.get("server-port", "").isdigit():
+            cfg["port"] = int(props["server-port"])
+        core.save_cfg(self.current, cfg)
+        with open(os.path.join(self.current, "server.properties"),
+                  "w") as f:
+            f.write(core.render_properties(props))
+        self.append_log("已保存高级配置 (重启后生效)")
+        self.on_select(self.list.currentItem(), None)
+
     def save_settings(self):
         if not self.current:
+            return
+        if self._need_stop_warn():
             return
         cfg = core.load_cfg(self.current)
         if not cfg:
