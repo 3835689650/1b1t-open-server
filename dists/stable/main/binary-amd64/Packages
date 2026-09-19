@@ -1,12 +1,12 @@
 Package: 1b1t-open-server
-Version: 1.0.42
+Version: 1.0.43
 Architecture: amd64
 Maintainer: 1b1t <3835689650@users.noreply.github.com>
-Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.42_amd64.deb
-Size: 76966324
-MD5sum: 91903bf62e0522d01c51128d7085e7cf
-SHA1: c897fd10df9663b4322ce233477b32adaa31ba79
-SHA256: 5d76fb3c9078ca0a54fbd14bc53244f71ac814499824ce7384db00494ef9cec6
+Filename: pool/main/1b1t-open-server/1b1t-open-server_1.0.43_amd64.deb
+Size: 76966952
+MD5sum: 49eba867f6380608a813b95963094668
+SHA1: 150fa422543e019c385e0a87b669558eb76fd0de
+SHA256: ef435ee760504f0ef975c3cd6268ffb80405db1d9403ee899c38f1b2f82d60ba
 Section: utils
 Priority: optional
 Homepage: https://www.1b1t.cn/
