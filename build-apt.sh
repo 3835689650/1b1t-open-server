@@ -29,10 +29,18 @@ Name=1b1t 开服工具
 Name[en]=1b1t Server Tool
 Comment=Minecraft 一键开服工具 (图形+命令行)
 Exec=/usr/local/bin/1b1t-gui
+Icon=1b1t
+StartupWMClass=1b1t-gui
 Terminal=false
 Type=Application
 Categories=Game;Utility;
 EOF
+    # 桌面图标 (软件封面, 云盘 logo)
+    if [ -f "$ROOT/assets/1b1t.png" ]; then
+        mkdir -p "$WORK/deb/usr/share/icons/hicolor/128x128/apps"
+        install -m644 "$ROOT/assets/1b1t.png" \
+            "$WORK/deb/usr/share/icons/hicolor/128x128/apps/1b1t.png"
+    fi
     cat > "$WORK/deb/DEBIAN/control" <<EOF
 Package: 1b1t-open-server
 Version: $VER
@@ -259,8 +267,8 @@ api_put() { # 本地文件 仓库路径 分支
 }
 # main 分支全量文件 (脚本/文档/apt 目录/三平台包)
 MAIN_FILES=()
-for f in 1b1t gui.py README.md LICENSE CHANGELOG.md build-apt.sh \
-         1b1t-apt-key.gpg \
+for f in 1b1t gui.py assets/logo.jpeg assets/1b1t.png README.md LICENSE \
+         CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg \
          $(cd apt && find . -type f | sed 's|^\./||') \
          $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
