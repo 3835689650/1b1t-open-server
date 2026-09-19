@@ -1652,6 +1652,14 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if len(sys.argv) > 3 and sys.argv[1] == "__sub":
+        # 内部子进程入口 (服务器 keeper/收尾进程):
+        # 冻结后 "二进制 -c 代码" 跑不起来, 统一走 __sub
+        if sys.argv[2] == "keeper":
+            core.run_keeper(sys.argv[3])
+        elif sys.argv[2] == "cleanup":
+            core.run_cleanup(sys.argv[3])
+        return
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
     win = MainWindow()
