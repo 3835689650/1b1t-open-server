@@ -1064,10 +1064,11 @@ class MainWindow(QMainWindow):
                     Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
                 self.bg_label.setGeometry(0, 0, w, h)
                 self.bg_label.show()
-                # 背景图上方叠深色玻璃层(图透出, 按钮保持液态玻璃)
+                # 背景图直接替换黑色底 (不再叠深色玻璃层, 原图全透出;
+                # 按钮/侧栏自带玻璃底, 边缘描边保留玻璃质感)
                 self.centralWidget().setStyleSheet(
                     "#Root { background: transparent; }"
-                    "#Glass { background: rgba(22,22,26,225);"
+                    "#Glass { background: transparent;"
                     " border-radius: 20px;"
                     " border: 1px solid rgba(255,255,255,30);"
                     " border-top: 1px solid rgba(255,255,255,60); }")
