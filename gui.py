@@ -180,7 +180,9 @@ class StartThread(QThread):
         except BaseException as e:
             # 任何异常(缺 Java 的 SystemExit/网络失败等)都要发 done,
             # 否则启动按钮永久禁用 → "启动不了"
-            self.done.emit(False, f"启动过程出错: {e}")
+            import traceback
+            tb = traceback.format_exc(limit=3)
+            self.done.emit(False, f"启动过程出错: {e}\n{tb}")
 
 
 class BackupThread(QThread):
@@ -231,7 +233,9 @@ class StopThread(QThread):
             with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
                 core.do_stop(self.server_dir)
         except BaseException as e:
-            self.log.emit(f"[错误] 停止过程出错: {e}")
+            import traceback
+            tb = traceback.format_exc(limit=3)
+            self.log.emit(f"[错误] 停止过程出错: {e}\n{tb}")
         self.done.emit()  # 保证 done 一定发出, 停止按钮不卡死
 
 
