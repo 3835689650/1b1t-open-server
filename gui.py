@@ -169,13 +169,18 @@ class StartThread(QThread):
         self.server_dir, self.cfg = server_dir, cfg
 
     def run(self):
-        ok, detail = core.api_start(self.server_dir, self.cfg,
-                                    self.log.emit)
-        if not ok and not detail:
-            # 启动进程失败: 取日志尾部关键报错行提示用户
-            detail = core._tail_error(self.server_dir) or \
-                "服务器进程启动失败, 请展开日志查看详情"
-        self.done.emit(ok, detail or "")
+        try:
+            ok, detail = core.api_start(self.server_dir, self.cfg,
+                                        self.log.emit)
+            if not ok and not detail:
+                # 启动进程失败: 取日志尾部关键报错行提示用户
+                detail = core._tail_error(self.server_dir) or \
+                    "服务器进程启动失败, 请展开日志查看详情"
+            self.done.emit(ok, detail or "")
+        except BaseException as e:
+            # 任何异常(缺 Java 的 SystemExit/网络失败等)都要发 done,
+            # 否则启动按钮永久禁用 → "启动不了"
+            self.done.emit(False, f"启动过程出错: {e}")
 
 
 class BackupThread(QThread):
@@ -218,9 +223,12 @@ class StopThread(QThread):
 
     def run(self):
         import contextlib
-        with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
-            core.do_stop(self.server_dir)
-        self.done.emit()
+        try:
+            with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
+                core.do_stop(self.server_dir)
+        except BaseException as e:
+            self.log.emit(f"[错误] 停止过程出错: {e}")
+        self.done.emit()  # 保证 done 一定发出, 停止按钮不卡死
 
 
 class ModVersThread(QThread):
@@ -1066,6 +1074,10 @@ class MainWindow(QMainWindow):
             return
         self.list.blockSignals(True)
         self.list.clearSelection()
+        # 必须同时清 currentItem: clearSelection 只清高亮不清内部
+        # currentItem, 否则再点同一个服务器不触发 currentItemChanged
+        # → 进不了详情页
+        self.list.setCurrentItem(None)
         self.list.blockSignals(False)
         self.stack.setCurrentIndex(0)
         self.nav_btns["home"].setChecked(True)
@@ -1263,6 +1275,9 @@ class MainWindow(QMainWindow):
             return
         cfg = core.load_cfg(self.current)
         if not cfg:
+            QMessageBox.warning(self, "启动失败",
+                                "服务器配置不存在或损坏, 无法启动\n\n"
+                                "可删除后重新创建该服务器")
             return
         self.append_log("========== 启动 ==========")
         self.start_btn.setEnabled(False)
