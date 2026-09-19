@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['1b1t_cli.py'],
+    ['1b1t'],
     pathex=[],
     binaries=[],
     datas=[],

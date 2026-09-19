@@ -1,0 +1,5 @@
+Registry	Root	Key	Name	Value	Component_
+s72	i2	l255	L255	L0	s72
+Registry	Registry
+regFE16B94EC1EC87214C30C7C777A54451	1	Software\1b1t	startmenu	1	startcomp
+reg3122A7591BFDF1EC5FD0ADBA37C4E7BD	1	Software\1b1t	desktop	1	deskcomp

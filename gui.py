@@ -43,11 +43,11 @@ DIM = "#98989D"
 QSS = f"""
 * {{ font-family: "SF Pro Text", "PingFang SC", "Segoe UI",
      "Microsoft YaHei", sans-serif; color: {TEXT}; }}
-#Root {{ background: transparent; }}
+#Root {{ background: #18181C; }}
 #Glass {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-        stop:0 rgba(36,36,42,158), stop:0.5 rgba(28,28,32,158),
-        stop:1 rgba(24,24,28,158));
+        stop:0 rgba(36,36,42,255), stop:0.5 rgba(28,28,32,255),
+        stop:1 rgba(24,24,28,255));
     border-radius: 20px;
     border: 1px solid rgba(255,255,255,28);
     border-top: 1px solid rgba(255,255,255,64);
@@ -78,6 +78,11 @@ QPushButton#Danger:disabled {{ background: rgba(255,69,58,80);
 QPushButton#WinBtn {{ background: transparent; border: none; border-radius: 8px;
     padding: 0; font-size: 13px; font-weight: 700; }}
 QPushButton#WinBtn:hover {{ background: rgba(255,255,255,24); }}
+QPushButton#NavBtn {{ background: transparent; border: none; border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; font-weight: 500; text-align: left; }}
+QPushButton#NavBtn:hover {{ background: rgba(255,255,255,16); }}
+QPushButton#NavBtn:checked {{ background: rgba(10,132,255,40);
+    color: white; font-weight: 600; }}
 QLineEdit, QComboBox {{
     background: rgba(255,255,255,14); border: 1px solid rgba(255,255,255,28);
     border-radius: 10px; padding: 8px 12px; font-size: 13px;
@@ -108,6 +113,8 @@ QListWidget::item:selected {{ background: rgba(10,132,255,50);
     border-radius: 14px; padding: 10px; font-family: "SF Mono", Consolas,
     monospace; font-size: 12px;
 }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent;
+    border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
 QScrollBar::handle:vertical {{ background: rgba(255,255,255,40);
     border-radius: 4px; min-height: 30px; }}
@@ -122,9 +129,10 @@ QRadioButton::indicator:checked {{ background: {ACCENT}; border: none; }}
 
 
 def glass_effect(win):
-    """Windows 11: DWM 圆角 + Mica 背景; 其他平台: 半透明"""
+    """Windows 11: DWM 圆角 + Mica 背景
+    返回 Mica 是否设置成功 (Win10/失败时调用方回退不透明玻璃)"""
     if sys.platform != "win32":
-        return
+        return True
     try:
         import ctypes
         hwnd = int(win.winId())
@@ -135,24 +143,60 @@ def glass_effect(win):
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
             ctypes.byref(ctypes.c_int(DWMWCP_ROUND)), 4)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+        ok = ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, DWMWA_SYSTEMBACKDROP_TYPE,
             ctypes.byref(ctypes.c_int(DWMSBT_MAINWINDOW)), 4)
+        return ok == 0  # S_OK 才算 Mica 生效
     except Exception:
-        pass
+        return False
 
 
 class StartThread(QThread):
     log = Signal(str)
-    done = Signal(bool)
+    done = Signal(bool, str)  # (成功?, 失败原因)
 
     def __init__(self, server_dir, cfg):
         super().__init__()
         self.server_dir, self.cfg = server_dir, cfg
 
     def run(self):
-        ok = core.api_start(self.server_dir, self.cfg, self.log.emit)
+        ok, detail = core.api_start(self.server_dir, self.cfg,
+                                    self.log.emit)
+        if not ok and not detail:
+            # 启动进程失败: 取日志尾部关键报错行提示用户
+            detail = core._tail_error(self.server_dir) or \
+                "服务器进程启动失败, 请展开日志查看详情"
+        self.done.emit(ok, detail or "")
+
+
+class BackupThread(QThread):
+    """后台打包存档 (大世界打包耗时不卡 UI)"""
+    log = Signal(str)
+    done = Signal(bool)
+
+    def __init__(self, server_dir):
+        super().__init__()
+        self.server_dir = server_dir
+        self.auto = False  # 自动备份失败只记日志不弹窗
+
+    def run(self):
+        ok = core.backup_world(self.server_dir, self.log.emit) is not None
         self.done.emit(ok)
+
+
+class _EmitIO:
+    """把 print 输出实时转发到 GUI 日志 (停止过程不再无反馈)"""
+
+    def __init__(self, emit):
+        self.emit = emit
+
+    def write(self, s):
+        for line in str(s).splitlines():
+            if line.strip():
+                self.emit(line)
+
+    def flush(self):
+        pass
 
 
 class StopThread(QThread):
@@ -164,14 +208,9 @@ class StopThread(QThread):
         self.server_dir = server_dir
 
     def run(self):
-        import io
         import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
             core.do_stop(self.server_dir)
-        for line in buf.getvalue().splitlines():
-            if line.strip():
-                self.log.emit(line)
         self.done.emit()
 
 
@@ -186,6 +225,151 @@ class ModVersThread(QThread):
     def run(self):
         self.done.emit(self.stype, core.list_mod_versions(self.mc_ver,
                                                           self.stype))
+
+
+class SettingsDialog(QDialog):
+    """软件设置: 版本号 / 自定义背景 / 定时备份 / 默认配置"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_win = parent
+        self.setWindowTitle("设置")
+        self.setFixedWidth(440)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(12)
+        # 版本号
+        ver = QLabel(f"1b1t-open-server   v{core.APP_VERSION}")
+        ver.setStyleSheet(f"font-size:16px;font-weight:700;color:{TEXT}")
+        lay.addWidget(ver)
+
+        # 自定义背景
+        lay.addWidget(QLabel("自定义背景"))
+        bg_row = QHBoxLayout()
+        self.bg_name = QLabel("(无, 深色背景)")
+        self.bg_name.setStyleSheet(f"color:{DIM};font-size:12px")
+        bg_row.addWidget(self.bg_name, 1)
+        pick = QPushButton("选择图片")
+        pick.clicked.connect(self.pick_bg)
+        clear = QPushButton("清除")
+        clear.clicked.connect(self.clear_bg)
+        bg_row.addWidget(pick)
+        bg_row.addWidget(clear)
+        lay.addLayout(bg_row)
+
+        # 定时备份
+        lay.addWidget(QLabel("定时备份"))
+        bak_row = QHBoxLayout()
+        self.bak_plan = QComboBox()
+        self.bak_plan.addItems(["关", "每 30 分钟", "每 1 小时",
+                                "每 2 小时", "每 6 小时", "每 12 小时",
+                                "每 24 小时"])
+        bak_row.addWidget(self.bak_plan, 1)
+        bak_row.addWidget(QLabel("保留份数"))
+        self.bak_keep = QLineEdit()
+        self.bak_keep.setFixedWidth(64)
+        bak_row.addWidget(self.bak_keep)
+        lay.addLayout(bak_row)
+
+        # 默认配置 (简单模式新服使用)
+        lay.addWidget(QLabel("新服务器默认配置"))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.addWidget(QLabel("正版验证"), 0, 0)
+        self.online = QComboBox()
+        self.online.addItems(["开", "关"])
+        grid.addWidget(self.online, 0, 1)
+        grid.addWidget(QLabel("难度"), 0, 2)
+        self.diff = QComboBox()
+        self.diff.addItems(["peaceful", "easy", "normal", "hard"])
+        grid.addWidget(self.diff, 0, 3)
+        grid.addWidget(QLabel("默认 MOTD"), 1, 0)
+        self.motd = QLineEdit()
+        grid.addWidget(self.motd, 1, 1, 1, 3)
+        grid.addWidget(QLabel("死亡不掉落"), 2, 0)
+        self.keep = QComboBox()
+        self.keep.addItems(["开", "关"])
+        grid.addWidget(self.keep, 2, 1)
+        lay.addLayout(grid)
+
+        save = QPushButton("保存设置")
+        save.setObjectName("Primary")
+        save.clicked.connect(self.save_all)
+        lay.addWidget(save)
+        self.reload_vals()
+
+    def reload_vals(self):
+        st = core.load_settings()
+        bg = st.get("bg_image", "")
+        self.bg_name.setText(os.path.basename(bg) if bg else "(无, 深色背景)")
+        try:
+            mins = int(st.get("backup_interval_min", "0") or 0)
+        except (ValueError, TypeError):
+            mins = 0
+        plan = {0: 0, 30: 1, 60: 2, 120: 3, 360: 4, 720: 5, 1440: 6}
+        self.bak_plan.setCurrentIndex(plan.get(mins, 0))
+        self.bak_keep.setText(str(st.get("backup_keep", "10")))
+        self.online.setCurrentIndex(0 if st["online_mode"] == "true" else 1)
+        self.diff.setCurrentText(st["difficulty"])
+        self.motd.setText(st["motd"])
+        self.keep.setCurrentIndex(
+            0 if st["keep_inventory"] == "true" else 1)
+
+    def pick_bg(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "选择背景图片", "",
+            "图片 (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if f:
+            st = core.load_settings()
+            st["bg_image"] = f
+            core.save_settings(st)
+            self.reload_vals()
+            if self.parent_win:
+                self.parent_win.apply_background()
+
+    def clear_bg(self):
+        st = core.load_settings()
+        st.pop("bg_image", None)
+        core.save_settings(st)
+        self.reload_vals()
+        if self.parent_win:
+            self.parent_win.apply_background()
+
+    def save_all(self):
+        st = core.load_settings()
+        plan = {0: "0", 1: "30", 2: "60", 3: "120", 4: "360", 5: "720",
+                6: "1440"}
+        st["backup_interval_min"] = plan[self.bak_plan.currentIndex()]
+        keep = self.bak_keep.text().strip()
+        if keep.isdigit() and int(keep) >= 1:
+            st["backup_keep"] = str(int(keep))
+        st["online_mode"] = "true" if self.online.currentIndex() == 0 \
+            else "false"
+        st["difficulty"] = self.diff.currentText()
+        st["motd"] = self.motd.text().strip() or "1b1t Server"
+        st["keep_inventory"] = "true" if self.keep.currentIndex() == 0 \
+            else "false"
+        core.save_settings(st)
+        if self.parent_win:
+            self.parent_win.load_backup_plan()
+        QMessageBox.information(self, "设置", "已保存")
+        self.accept()
+
+
+class LogWindow(QDialog):
+    """独立日志窗口 (玻璃样式, 跟随主窗口日志实时滚动)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("1b1t 服务器日志")
+        self.resize(720, 480)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 14, 14, 14)
+        self.logbox = QPlainTextEdit()
+        self.logbox.setObjectName("LogBox")
+        self.logbox.setReadOnly(True)
+        self.logbox.setMaximumBlockCount(5000)
+        lay.addWidget(self.logbox)
 
 
 class NewServerDialog(QDialog):
@@ -243,7 +427,7 @@ class NewServerDialog(QDialog):
         # mod 加载器版本 (选 Fabric/NeoForge/Forge 时显示)
         self.mod_lab = QLabel("加载器版本")
         self.mod_ver = QComboBox()
-        self.mod_ver.setEditable(True)
+        self.mod_ver.setEditable(False)  # 纯下拉选择, 不用输入
         self.mod_ver.setPlaceholderText("自动使用最新版")
         self.mod_lab.hide()
         self.mod_ver.hide()
@@ -305,6 +489,12 @@ class NewServerDialog(QDialog):
             return
         cur = self.mod_ver.currentText()
         self.mod_ver.clear()
+        if not vers:
+            # 该 MC 版本没有此加载器 (如 NeoForge 不支持 1.20.1)
+            self.mod_ver.addItem(f"(该版本无 {stype} 可用, 将自动用最新)",
+                                 None)
+            self.mod_ver.setCurrentIndex(0)
+            return
         for v in vers[:15]:
             self.mod_ver.addItem(v, v)
         if cur:
@@ -354,27 +544,25 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("1b1t 开服工具")
         self.setWindowFlags(Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(980, 640)
+        # 固定窗口尺寸: 防止详情页内容把窗口撑高(侧边栏底部按钮被挤出)
+        self.setFixedSize(980, 640)
         self.drag_pos = None
         self.current = None  # 当前选中服务器目录
         self.log_offset = 0
         self.start_thread = None
         self.stop_thread = None
+        self.bak_thread = None
+        self.log_win = None  # 独立日志窗口
 
         root = QWidget()
         root.setObjectName("Root")
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
         outer.setContentsMargins(14, 14, 14, 14)
-        # Linux 毛玻璃: 截屏桌面+高斯模糊铺底 (Windows 用 Mica, macOS 用系统 vibrancy)
+        # 自定义背景图层 (全平台背景完全不透明; 液态玻璃质感只在按钮/卡片)
         self.is_linux = sys.platform.startswith("linux")
-        self.blur_label = QLabel(root)
-        self.blur_label.lower()
-        if self.is_linux:
-            self.blur_timer = QTimer(self)
-            self.blur_timer.timeout.connect(self.linux_blur_bg)
-            self.blur_timer.start(2000)
+        self.bg_label = QLabel(root)
+        self.bg_label.lower()
         glass = QFrame()
         glass.setObjectName("Glass")
         # 窗口阴影 (无边框窗口必需, 否则玻璃感出不来)
@@ -396,12 +584,35 @@ class MainWindow(QMainWindow):
         sv = QVBoxLayout(side)
         sv.setContentsMargins(18, 22, 18, 16)
         sv.setSpacing(12)
+        # logo 行: 窗口控制按钮(红=关闭 黄=最小化) + 1b1t 标题
+        logo_row = QHBoxLayout()
+        logo_row.setSpacing(8)
+        self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
+        self.win_close.clicked.connect(self.close)
+        self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
+        self.win_min.clicked.connect(self.showMinimized)
+        self.win_close.setToolTip("关闭")
+        self.win_min.setToolTip("最小化")
+        for b in (self.win_close, self.win_min):
+            logo_row.addWidget(b)
         logo = QLabel("1b1t")
         logo.setObjectName("Logo")
-        sv.addWidget(logo)
+        logo_row.addWidget(logo)
+        logo_row.addStretch(1)
+        sv.addLayout(logo_row)
         tag = QLabel("Minecraft 一键开服")
         tag.setObjectName("Tagline")
         sv.addWidget(tag)
+        # ---- 侧边栏: 主页入口 + 服务器列表直接放 + 设置固定在底部 ----
+        self.nav_btns = {}
+        home_btn = QPushButton("🏠 主页")
+        home_btn.setObjectName("NavBtn")
+        home_btn.setCheckable(True)
+        home_btn.setChecked(True)
+        home_btn.clicked.connect(lambda _c: self.nav_to("home"))
+        sv.addWidget(home_btn)
+        self.nav_btns["home"] = home_btn
+        # 新建 + 服务器列表 (直接放在侧边栏)
         new_btn = QPushButton("＋ 新建服务器")
         new_btn.setObjectName("Primary")
         new_btn.clicked.connect(self.new_server)
@@ -409,34 +620,59 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self.on_select)
         sv.addWidget(self.list, 1)
+        # 侧边栏底部: 设置 + 版本号
+        set_btn = QPushButton("⚙ 设置")
+        set_btn.setObjectName("NavBtn")
+        set_btn.clicked.connect(self.open_settings)
+        sv.addWidget(set_btn)
+        ver_lab = QLabel(f"v{core.APP_VERSION}")
+        ver_lab.setStyleSheet(f"color:{DIM};font-size:11px")
+        sv.addWidget(ver_lab)
         grid.addWidget(side, 0, 0)
+
+        # ---- 主页 ----
+        self.home_page = QWidget()
+        hv = QVBoxLayout(self.home_page)
+        hv.setContentsMargins(26, 40, 26, 20)
+        hv.setSpacing(14)
+        home_title = QLabel("1b1t 开服工具")
+        home_title.setStyleSheet(
+            f"font-size:28px;font-weight:700;color:{TEXT};"
+            "font-family:\"SF Pro Display\",\"PingFang SC\",sans-serif;")
+        hv.addWidget(home_title)
+        home_sub = QLabel("Minecraft 一键开服 · 图形 + 命令行")
+        home_sub.setStyleSheet(f"color:{DIM};font-size:14px")
+        hv.addWidget(home_sub)
+        self.home_stats = QLabel("")
+        self.home_stats.setStyleSheet(
+            f"color:{DIM};font-size:13px;margin-top:4px")
+        hv.addWidget(self.home_stats)
+        hv.addSpacing(10)
+        # 快捷入口卡片 (设置入口只在侧边栏导航)
+        for text, icon, handler in (
+                ("新建服务器", "＋", self.new_server),
+                ("打开服务器目录", "📁", self.open_servers_dir),
+                ("手动开服教程", "📖", self.open_docs)):
+            card = QPushButton(f"{icon}  {text}")
+            card.setFixedHeight(44)
+            card.clicked.connect(handler)
+            hv.addWidget(card)
+        hv.addStretch(1)
 
         # ---- 右栏 ----
         main = QWidget()
+        self.main_page = main
         mv = QVBoxLayout(main)
         mv.setContentsMargins(26, 24, 26, 20)
         mv.setSpacing(12)
 
-        # 头部: 窗口控制(红黄绿) + 名字 + 副标题 + 状态灯
+        # 头部: 名字 + 副标题 + 状态灯 (红绿灯已移到侧边栏)
         head = QHBoxLayout()
         headv = QVBoxLayout()
         headv.setSpacing(2)
-        title_row = QHBoxLayout()
-        title_row.setSpacing(6)
         self.name_lab = QLabel("选择或新建服务器")
         self.name_lab.setObjectName("ServerName")
-        title_row.addWidget(self.name_lab)
-        # 苹果风窗口控制按钮 (关闭/最小化)
-        self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
-        self.win_close.clicked.connect(self.close)
-        self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
-        self.win_min.clicked.connect(self.showMinimized)
-        self.win_close.setToolTip("关闭")
-        self.win_min.setToolTip("最小化")
-        title_row.addStretch(1)
-        title_row.addWidget(self.win_min)
-        title_row.addWidget(self.win_close)
-        headv.addLayout(title_row)
+        headv.addWidget(self.name_lab)
         self.sub_lab = QLabel("在左侧选择服务器开始管理")
         self.sub_lab.setObjectName("ServerSub")
         headv.addWidget(self.sub_lab)
@@ -513,7 +749,53 @@ class MainWindow(QMainWindow):
         save_btn = QPushButton("保存设置")
         save_btn.clicked.connect(self.save_settings)
         form.addWidget(save_btn, 2, 3)
+        form.addWidget(QLabel("自定义背景"), 3, 0)
+        bgrow = QHBoxLayout()
+        self.bg_name = QLabel("(无, 深色背景)")
+        self.bg_name.setStyleSheet(f"color:{DIM};font-size:12px")
+        bgrow.addWidget(self.bg_name, 1)
+        pick_bg = QPushButton("选择图片")
+        pick_bg.clicked.connect(self.pick_background)
+        clear_bg = QPushButton("清除")
+        clear_bg.clicked.connect(self.clear_background)
+        bgrow.addWidget(pick_bg)
+        bgrow.addWidget(clear_bg)
+        form.addLayout(bgrow, 3, 1, 1, 3)
         mv.addLayout(form)
+
+        # 存档备份
+        self.backup_card = QWidget()
+        bv = QVBoxLayout(self.backup_card)
+        bv.setContentsMargins(0, 0, 0, 0)
+        bv.setSpacing(8)
+        bak_title = QLabel("存档备份")
+        bak_title.setObjectName("CardTitle")
+        bv.addWidget(bak_title)
+        bak_row = QHBoxLayout()
+        bak_now = QPushButton("立即备份")
+        bak_now.setObjectName("Primary")
+        bak_now.clicked.connect(self.do_backup_now)
+        self.bak_list = QListWidget()
+        self.bak_list.setFixedHeight(80)
+        self.bak_restore = QPushButton("恢复选中")
+        self.bak_restore.clicked.connect(self.restore_backup)
+        self.bak_del = QPushButton("删除")
+        self.bak_del.setObjectName("Danger")
+        self.bak_del.clicked.connect(self.del_backup)
+        # 定时备份开关 + 间隔 (分钟)
+        self.bak_auto = QComboBox()
+        self.bak_auto.addItems(["定时备份: 关", "每 30 分钟", "每 1 小时",
+                                "每 2 小时", "每 6 小时", "每 12 小时",
+                                "每 24 小时"])
+        self.bak_auto.currentIndexChanged.connect(self.save_backup_plan)
+        bak_row.addWidget(bak_now)
+        bak_row.addWidget(self.bak_restore)
+        bak_row.addWidget(self.bak_del)
+        bak_row.addWidget(self.bak_auto, 1)
+        bv.addLayout(bak_row)
+        bv.addWidget(self.bak_list)
+        self.backup_card.hide()  # 选中服务器后才显示
+        mv.addWidget(self.backup_card)
 
         # Mod 管理 (mod 服务器才有)
         self.mod_card = QWidget()
@@ -543,15 +825,44 @@ class MainWindow(QMainWindow):
         mv.addWidget(self.mod_card)
 
         # 日志
+        log_head = QHBoxLayout()
         log_title = QLabel("服务器日志")
         log_title.setObjectName("CardTitle")
-        mv.addWidget(log_title)
+        log_head.addWidget(log_title)
+        log_head.addStretch(1)
+        self.log_pop_btn = QPushButton("⧉ 弹出日志窗口")
+        self.log_pop_btn.clicked.connect(self.pop_log_window)
+        log_head.addWidget(self.log_pop_btn)
+        mv.addLayout(log_head)
         self.logbox = QPlainTextEdit()
         self.logbox.setObjectName("LogBox")
         self.logbox.setReadOnly(True)
         self.logbox.setMaximumBlockCount(5000)  # 防内存无限增长
+        self.logbox.setMinimumHeight(140)  # 滚动布局下日志区保持可用高度
         mv.addWidget(self.logbox, 1)
-        grid.addWidget(main, 0, 1)
+        # 控制台命令输入 (发到服务器控制台)
+        cmd_row = QHBoxLayout()
+        cmd_row.setSpacing(8)
+        self.cmd_in = QLineEdit()
+        self.cmd_in.setPlaceholderText("输入服务器命令, 回车发送 (如 say 你好 / list / stop)")
+        self.cmd_in.returnPressed.connect(self.send_cmd)
+        cmd_row.addWidget(self.cmd_in, 1)
+        send_btn = QPushButton("发送")
+        send_btn.clicked.connect(self.send_cmd)
+        cmd_row.addWidget(send_btn)
+        mv.addLayout(cmd_row)
+        # 右侧用 QStackedWidget 切换主页/详情 (可靠, 无 z-order 问题)
+        # 详情页包进滚动区: 固定窗口下设置表单不被挤压成 6px
+        from PySide6.QtWidgets import QStackedWidget, QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(main)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.home_page)  # index 0
+        self.stack.addWidget(scroll)          # index 1
+        self.main_page = scroll
+        grid.addWidget(self.stack, 0, 1)
 
         # 日志轮询
         self.timer = QTimer(self)
@@ -559,7 +870,51 @@ class MainWindow(QMainWindow):
         self.timer.start(1000)
 
         self.refresh_list()
-        glass_effect(self)
+        self.load_backup_plan()
+        self.apply_background()
+        # 初始显示主页
+        self.stack.setCurrentIndex(0)
+        self.refresh_home_stats()
+
+    def open_settings(self):
+        """软件设置对话框 (版本号/背景/备份计划/默认配置)"""
+        dlg = SettingsDialog(self)
+        dlg.exec()
+
+    def open_servers_dir(self):
+        """文件管理器打开服务器所在目录"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(
+            os.path.expanduser("~")))
+
+    def open_docs(self):
+        """浏览器打开手动开服教程"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl("https://www.1b1t.cn/docs/"))
+
+    def refresh_home_stats(self):
+        """主页统计: 服务器总数 / 运行中数量"""
+        dirs = core.find_servers()
+        running = 0
+        for d in dirs:
+            old = core.read_pid(d)
+            if old and core.is_running(old["pid"]):
+                running += 1
+        self.home_stats.setText(
+            f"共 {len(dirs)} 个服务器 · {running} 个运行中 · "
+            f"v{core.APP_VERSION}")
+
+    def toggle_max(self):
+        """无边框窗口安全最大化: 记录原位置, 铺满屏幕工作区, 再点还原"""
+        if getattr(self, "_maxed", False):
+            self.setGeometry(self._normal_geo)
+            self._maxed = False
+        else:
+            self._normal_geo = self.geometry()
+            self._maxed = True
+            self.setGeometry(QApplication.primaryScreen().availableGeometry())
 
     def _win_btn(self, glyph, idle, hover):
         """苹果交通灯样式窗口按钮"""
@@ -593,90 +948,58 @@ class MainWindow(QMainWindow):
     def mouseReleaseEvent(self, e):
         self.drag_pos = None
 
-    # ---------- Linux 毛玻璃背景 ----------
-    def enable_opaque_glass(self):
-        """抓不到桌面内容时(合成器/Xwayland root 黑)回退: 不透明深色玻璃"""
-        if getattr(self, "linux_opaque", False):
-            return
-        self.linux_opaque = True
-        self.blur_label.hide()
-        self.setAttribute(Qt.WA_TranslucentBackground, False)
-        # Root 必须补不透明底: 否则 Glass 圆角外 14px 边距区露黑块
-        self.centralWidget().setStyleSheet(
-            "#Root { background: #18181C; }"
-            "#Glass { background: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-            " stop:0 rgba(36,36,42,255), stop:0.5 rgba(28,28,32,255),"
-            " stop:1 rgba(24,24,28,255)); }")
-        # 已 show 时重建窗口让 X11 visual 切到 depth 24 (alpha 丢弃)
-        if self.isVisible():
-            QTimer.singleShot(0, lambda: (self.destroy(True, True),
-                                          self.show()))
+    # ---------- 自定义背景 ----------
+    def apply_background(self):
+        """设置里保存的背景图片铺满窗口 (无则默认深色玻璃底)"""
+        try:
+            st = core.load_settings()
+            bg = st.get("bg_image", "")
+        except Exception:
+            bg = ""
+        if bg and os.path.isfile(bg):
+            pm = QPixmap(bg)
+            if not pm.isNull():
+                w, h = self.width(), self.height()
+                self.bg_label.setPixmap(pm.scaled(
+                    max(1, w), max(1, h),
+                    Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+                self.bg_label.setGeometry(0, 0, w, h)
+                self.bg_label.show()
+                # 背景图上方叠深色玻璃层(图透出, 按钮保持液态玻璃)
+                self.centralWidget().setStyleSheet(
+                    "#Root { background: transparent; }"
+                    "#Glass { background: rgba(22,22,26,225);"
+                    " border-radius: 20px;"
+                    " border: 1px solid rgba(255,255,255,30);"
+                    " border-top: 1px solid rgba(255,255,255,60); }")
+                self.bg_name.setText(os.path.basename(bg))
+                return
+        self.bg_label.hide()
+        self.centralWidget().setStyleSheet("")  # 恢复默认不透明深色
+        self.bg_name.setText("(无, 深色背景)")
 
-    def linux_blur_bg(self):
-        """截取窗口后方桌面区域, 高斯模糊后铺底 (模拟苹果液态玻璃)
-        合成器下 root 窗口为黑时自动回退不透明玻璃"""
-        if getattr(self, "linux_opaque", False):
+    def pick_background(self):
+        f, _ = QFileDialog.getOpenFileName(
+            self, "选择背景图片", "",
+            "图片 (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not f:
             return
-        screen = QApplication.primaryScreen()
-        if not screen:
-            return
-        w, h = self.width(), self.height()
-        if w <= 0 or h <= 0:
-            return
-        pm = screen.grabWindow(0, self.x(), self.y(), w, h)
-        if pm.isNull():
-            return
-        # 采样检测: root 全黑 = 合成器桌面抓不到 → 回退不透明玻璃
-        img = pm.toImage()
-        pts = [(x * img.width() // 8, y * img.height() // 8)
-               for x in range(1, 8) for y in range(1, 8)]
-        black = sum(1 for x, y in pts
-                    if img.pixelColor(x, y).lightness() < 12)
-        if black > len(pts) * 0.8:
-            self.enable_opaque_glass()
-            return
-        # 降采样 1/4 再模糊(性能), 放大回原尺寸铺底
-        small = pm.scaled(max(1, w // 4), max(1, h // 4),
-                          Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        scene = QGraphicsScene()
-        item = QGraphicsPixmapItem(small)
-        blur = QGraphicsBlurEffect()
-        blur.setBlurRadius(22)
-        item.setGraphicsEffect(blur)
-        scene.addItem(item)
-        out = QPixmap(small.size())
-        out.fill(Qt.transparent)
-        p = QPainter(out)
-        scene.render(p)
-        p.end()
-        big = out.scaled(w, h, Qt.KeepAspectRatio, Qt.FastTransformation)
-        # 圆角裁剪, 盖住 20px 圆角外区域
-        from PySide6.QtGui import QPainterPath
-        rounded = QPixmap(w, h)
-        rounded.fill(Qt.transparent)
-        rp = QPainter(rounded)
-        path = QPainterPath()
-        path.addRoundedRect(0, 0, w - 1, h - 1, 20, 20)
-        rp.setClipPath(path)
-        rp.drawPixmap(0, 0, big)
-        rp.end()
-        self.blur_label.setPixmap(rounded)
-        self.blur_label.setGeometry(0, 0, w, h)
+        st = core.load_settings()
+        st["bg_image"] = f
+        core.save_settings(st)
+        self.apply_background()
+        self.append_log(f"已设置自定义背景: {os.path.basename(f)}")
 
-    def showEvent(self, e):
-        super().showEvent(e)
-        if self.is_linux:
-            self.linux_blur_bg()
-
-    def moveEvent(self, e):
-        super().moveEvent(e)
-        if self.is_linux:
-            self.linux_blur_bg()
+    def clear_background(self):
+        st = core.load_settings()
+        st.pop("bg_image", None)
+        core.save_settings(st)
+        self.apply_background()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self.is_linux:
-            self.linux_blur_bg()
+        if hasattr(self, "bg_label"):
+            self.apply_background()
 
     # ---------- 服务器列表 ----------
     def refresh_list(self, select=None):
@@ -693,11 +1016,32 @@ class MainWindow(QMainWindow):
                 self.list.setCurrentItem(item)
         self.list.blockSignals(False)
 
+    def nav_to(self, key):
+        """侧边栏主页入口: 切回主页视图 (保留服务器选择)"""
+        if key != "home":
+            return
+        self.list.blockSignals(True)
+        self.list.clearSelection()
+        self.list.blockSignals(False)
+        self.stack.setCurrentIndex(0)
+        self.nav_btns["home"].setChecked(True)
+        self.refresh_home_stats()
+        self.update_state()
+
     def on_select(self, item, prev):
         if item is None:
+            # 取消选择 → 回主页
+            self.current = None
+            self.stack.setCurrentIndex(0)
+            self.nav_btns["home"].setChecked(True)
+            self.refresh_home_stats()
+            self.backup_card.hide()
+            self.update_state()
             return
         d = item.data(Qt.UserRole)
         self.current = d
+        self.stack.setCurrentIndex(1)
+        self.nav_btns["home"].setChecked(False)
         self.log_offset = 0
         self.logbox.clear()
         cfg = core.load_cfg(d)
@@ -724,6 +1068,8 @@ class MainWindow(QMainWindow):
         self.ed_players.setText(props.get("max-players", "20"))
         self.cb_ram.setEditText(cfg.get("ram", "2G"))
         self.refresh_mods()
+        self.refresh_backups()
+        self.load_backup_plan()
         self.update_state()
 
     def update_state(self):
@@ -750,19 +1096,52 @@ class MainWindow(QMainWindow):
 
     # ---------- 日志 ----------
     def append_log(self, text):
-        """按关键词着色: 错误红/警告黄/普通白 (苹果风终端配色)"""
+        """按关键词着色: 错误红/警告黄/普通白 (苹果风终端配色)
+        同时写入独立日志窗口 (若已弹出)"""
         for line in text.splitlines():
             low = line.lower()
             if re.search(r"error|exception|fail|错误|失败", low):
-                self.logbox.appendHtml(
-                    f'<span style="color:#FF6A61">{self._esc(line)}</span>')
+                html = f'<span style="color:#FF6A61">{self._esc(line)}</span>'
             elif re.search(r"warn|警告", low):
-                self.logbox.appendHtml(
-                    f'<span style="color:#FFD60A">{self._esc(line)}</span>')
+                html = f'<span style="color:#FFD60A">{self._esc(line)}</span>'
+            else:
+                html = None
+            if html:
+                self.logbox.appendHtml(html)
+                if self.log_win:
+                    self.log_win.logbox.appendHtml(html)
             else:
                 self.logbox.appendPlainText(line)
-        sb = self.logbox.verticalScrollBar()
-        sb.setValue(sb.maximum())
+                if self.log_win:
+                    self.log_win.logbox.appendPlainText(line)
+        for box in (self.logbox,) + ((self.log_win.logbox,)
+                                     if self.log_win else ()):
+            sb = box.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def pop_log_window(self):
+        """日志独立弹窗 (可以拖到副屏/单独看)"""
+        if self.log_win is None:
+            self.log_win = LogWindow(self)
+        self.log_win.show()
+        self.log_win.raise_()
+
+    def send_cmd(self):
+        """把输入的命令发到服务器控制台 (如 say/list/stop)"""
+        if not self.current:
+            return
+        line = self.cmd_in.text().strip()
+        if not line:
+            return
+        old = core.read_pid(self.current)
+        if not old or not core.is_running(old["pid"]):
+            QMessageBox.warning(self, "发送命令", "服务器未在运行")
+            return
+        if core.send_console(self.current, line):
+            self.append_log(f"> {line}")
+            self.cmd_in.clear()
+        else:
+            QMessageBox.warning(self, "发送命令", "命令发送失败")
 
     @staticmethod
     def _esc(s):
@@ -770,6 +1149,8 @@ class MainWindow(QMainWindow):
                  .replace(">", "&gt;"))
 
     def poll_log(self):
+        # 定时备份检查 (last_backup 时间戳防重复)
+        self.check_auto_backup()
         if not self.current:
             return
         path = os.path.join(core.runtime_dir(self.current), "console.log")
@@ -839,12 +1220,15 @@ class MainWindow(QMainWindow):
         self.start_thread.done.connect(self.on_start_done)
         self.start_thread.start()
 
-    def on_start_done(self, ok):
+    def on_start_done(self, ok, detail):
         self.start_btn.setEnabled(True)
         self.update_state()
         if not ok:
-            QMessageBox.warning(self, "启动失败",
-                                "服务器启动失败, 请看日志排查")
+            # 明确失败原因弹窗 (含日志尾部关键报错行)
+            QMessageBox.warning(
+                self, "启动失败",
+                f"服务器启动失败\n\n{detail}\n\n"
+                "完整日志见下方日志区 (可用 doctor 排查)")
 
     def on_stop(self):
         if not self.current:
@@ -890,6 +1274,150 @@ class MainWindow(QMainWindow):
         self.append_log(f"已删除: {d}")
         self.current = None
         self.refresh_list()
+        self.nav_to("home")  # 删除后返回主页
+
+    # ---------- 存档备份 ----------
+    BAK_PLAN = {0: 0, 1: 30, 2: 60, 3: 120, 4: 360, 5: 720, 6: 1440}
+
+    def bak_dir(self):
+        return os.path.join(self.current or "", "backups")
+
+    def save_backup_plan(self, idx):
+        """定时备份开关/间隔 → settings (GUI 开着时按间隔自动备份)"""
+        st = core.load_settings()
+        st["backup_interval_min"] = str(self.BAK_PLAN.get(idx, 0))
+        core.save_settings(st)
+
+    def load_backup_plan(self):
+        st = core.load_settings()
+        try:
+            mins = int(st.get("backup_interval_min", "0") or 0)
+        except (ValueError, TypeError):
+            mins = 0
+        # 找最近的档位 (找不到就用 0=关)
+        idx = 0
+        for i, m in self.BAK_PLAN.items():
+            if m == mins:
+                idx = i
+        self.bak_auto.blockSignals(True)
+        self.bak_auto.setCurrentIndex(idx)
+        self.bak_auto.blockSignals(False)
+
+    def refresh_backups(self):
+        if not self.current:
+            self.backup_card.hide()
+            return
+        self.backup_card.show()
+        self.bak_list.clear()
+        d = self.bak_dir()
+        if not os.path.isdir(d):
+            return
+        for f in sorted(os.listdir(d), reverse=True):
+            if not f.endswith(".tar.gz"):
+                continue
+            p = os.path.join(d, f)
+            size = os.path.getsize(p) // 1024 // 1024
+            item = QListWidgetItem(
+                f"{f}   ({size} MB, {time.strftime('%m-%d %H:%M', time.localtime(os.path.getmtime(p)))})")
+            item.setData(Qt.UserRole, p)
+            self.bak_list.addItem(item)
+
+    def check_auto_backup(self):
+        """定时备份检查 (每秒调用; last_backup 防重复,
+        last_backup_attempt 防失败后每 1 秒疯狂重试)"""
+        if not self.current:
+            return
+        st = core.load_settings()
+        try:
+            mins = int(st.get("backup_interval_min", "0") or 0)
+        except (ValueError, TypeError):
+            return
+        if mins <= 0:
+            return
+        cfg = core.load_cfg(self.current)
+        last = (cfg or {}).get("last_backup", 0)
+        attempt = (cfg or {}).get("last_backup_attempt", 0)
+        # 失败后至少 10 分钟再试 (备份是重活, 不能每秒重试)
+        if time.time() - last >= mins * 60 and time.time() - attempt >= 600:
+            cfg["last_backup_attempt"] = int(time.time())
+            core.save_cfg(self.current, cfg)
+            self.do_backup_now(auto=True)
+
+    def do_backup_now(self, auto=False):
+        if not self.current:
+            return
+        if not auto:
+            self.append_log("========== 备份存档 ==========")
+        if self.bak_thread and self.bak_thread.isRunning():
+            return  # 备份进行中, 防重复
+        self.bak_thread = BackupThread(self.current)
+        self.bak_thread.auto = auto
+        self.bak_thread.log.connect(self.append_log)
+        self.bak_thread.done.connect(self.on_backup_done)
+        self.bak_thread.start()
+
+    def on_backup_done(self, ok):
+        self.refresh_backups()
+        if not ok:
+            # 自动备份失败只记日志(不弹窗骚扰), 手动备份失败才弹窗
+            if getattr(self.bak_thread, "auto", False):
+                self.append_log("[备份] 自动备份失败, 10 分钟后自动重试")
+                return
+            QMessageBox.warning(self, "备份失败", "存档备份失败, 请看日志")
+
+    def closeEvent(self, e):
+        """关闭软件时回收全部后台线程 (防 QThread 崩溃/关不掉)"""
+        for t in (self.bak_thread, self.start_thread, self.stop_thread):
+            if t and t.isRunning():
+                t.terminate()
+                t.wait(2000)
+        super().closeEvent(e)
+
+    def restore_backup(self):
+        item = self.bak_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "恢复备份", "请先选择要恢复的备份")
+            return
+        p = item.data(Qt.UserRole)
+        if QMessageBox.question(
+                self, "恢复备份",
+                f"恢复 {os.path.basename(p)} ?\n当前存档会被覆盖, "
+                "恢复前会自动备份当前存档") != QMessageBox.Yes:
+            return
+        # 先备份当前 (防误操作丢档)
+        self.append_log("恢复前先备份当前存档...")
+        core.backup_world(self.current, self.append_log)
+        # 服务器需停止才能安全恢复
+        old = core.read_pid(self.current)
+        if old and core.is_running(old["pid"]):
+            QMessageBox.warning(self, "恢复备份",
+                                "服务器正在运行, 请先停止再恢复")
+            self.refresh_backups()
+            return
+        try:
+            import tarfile
+            with tarfile.open(p, "r:gz") as tf:
+                tf.extractall(self.current)
+            self.append_log(f"已恢复备份: {os.path.basename(p)}")
+            self.refresh_backups()
+        except Exception as e:
+            QMessageBox.warning(self, "恢复失败", str(e))
+
+    def del_backup(self):
+        item = self.bak_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "删除备份", "请先选择要删除的备份")
+            return
+        p = item.data(Qt.UserRole)
+        if QMessageBox.question(self, "删除备份",
+                                f"确定删除 {os.path.basename(p)} ?") \
+                != QMessageBox.Yes:
+            return
+        try:
+            os.remove(p)
+            self.refresh_backups()
+        except OSError as e:
+            QMessageBox.warning(self, "删除失败", str(e))
 
     # ---------- Mod 管理 ----------
     def mods_dir(self):

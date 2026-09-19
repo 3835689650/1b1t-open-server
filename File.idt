@@ -1,0 +1,6 @@
+File	Component_	FileName	FileSize	Version	Language	Attributes	Sequence
+s72	s72	l255	i4	S72	S20	I2	i4
+File	File
+cli	clicomp	1b1t.exe	9458601			512	1
+gui	guicomp	1b1t-gui.exe	49795301			512	2
+setpathbat	batcomp	setpath.bat	227			512	3

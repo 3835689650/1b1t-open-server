@@ -1,0 +1,9 @@
+Directory	Directory_Parent	DefaultDir
+s72	S72	l255
+Directory	Directory
+PROGDIR	ProgramMenuFolder	1b1t
+DesktopFolder	TARGETDIR	.
+INSTALLDIR	LocalAppDataFolder	1b1t
+LocalAppDataFolder	TARGETDIR	.
+TARGETDIR		SourceDir
+ProgramMenuFolder	TARGETDIR	.

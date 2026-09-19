@@ -1,0 +1,5 @@
+Shortcut	Directory_	Name	Component_	Target	Arguments	Description	Hotkey	Icon_	IconIndex	ShowCmd	WkDir	DisplayResourceDLL	DisplayResourceId	DescriptionResourceDLL	DescriptionResourceId
+s72	s72	l128	s72	s72	S255	L255	I2	S72	I2	I2	S72	S255	I2	S255	I2
+Shortcut	Shortcut
+SC1	PROGDIR	1b1t 开服工具	startcomp	[INSTALLDIR]1b1t-gui.exe		Minecraft 一键开服工具 (图形版)					INSTALLDIR				
+SC2	DesktopFolder	1b1t 开服工具	deskcomp	[INSTALLDIR]1b1t-gui.exe		Minecraft 一键开服工具 (图形版)					INSTALLDIR				
