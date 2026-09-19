@@ -70,7 +70,7 @@ def mirror_http():
     return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
-APP_VERSION = "1.0.39"  # 发版时更新 (version 子命令显示)
+APP_VERSION = "1.0.40"  # 发版时更新 (version 子命令显示)
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
@@ -576,8 +576,11 @@ def _mirror_path(url):
     return os.path.join(mirror_dir(), p.netloc, p.path.lstrip("/"))
 
 
-def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False):
-    """单个 URL 下载, 显示进度, 支持续传, 失败返回 False"""
+def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False,
+               min_speed=0):
+    """单个 URL 下载, 显示进度, 支持续传, 失败返回 False
+    min_speed: 最低平均速度(字节/秒), 5 秒后仍不达标放弃该源
+    (隧道镜像太慢时自动切下一个源, 半截文件留给下一源续传)"""
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     headers = {"User-Agent": APP}
     have = os.path.getsize(dest) if os.path.exists(dest) else 0
@@ -590,12 +593,19 @@ def _fetch_one(url, dest, expect_sha1=None, expect_size=None, quiet=False):
                 print(c(f"  下载源: {url}", "dim"))
             total = int(r.headers.get("Content-Length", 0)) + have
             mode = "ab" if have else "wb"
+            started = time.time()
             with open(dest, mode) as f:
                 while True:
-                    chunk = r.read(1 << 20)
+                    # 限速源用小块读, 5 秒左右即可判定过慢并切源
+                    chunk = r.read((64 << 10) if min_speed else (1 << 20))
                     if not chunk:
                         break
                     f.write(chunk)
+                    if min_speed and time.time() - started > 5 \
+                            and f.tell() / (time.time() - started) < min_speed:
+                        if not quiet:
+                            print(c("  该源速度过慢, 切换下一源", "yellow"))
+                        return False
                     if not quiet:
                         done = f.tell()
                         pct = done * 100 // total if total else 0
@@ -644,12 +654,14 @@ def fetch(url, dest, expect_sha1=None, expect_size=None):
     # 直接走官方源; 其他机器(无本机镜像目录)先试 serverdown 隧道镜像
     # 注意 serverdown 路径必须含域名段(与镜像物理结构一致), 否则永远 404
     if os.path.isdir(mirror_dir()):
-        net_urls = list(urls)
+        net_urls = [(u, 0) for u in urls]
     else:
-        net_urls = [mirror_http() + os.path.relpath(_mirror_path(u), mirror_dir())
-                    for u in urls] + list(urls)
-    for u in net_urls:
-        if _fetch_one(u, dest, expect_sha1, expect_size):
+        # 隧道镜像先试, 但带限速兜底(256KB/s): 太慢自动切官方/BMCLAPI 源
+        net_urls = [(mirror_http() + os.path.relpath(_mirror_path(u), mirror_dir()),
+                     256 << 10)
+                    for u in urls] + [(u, 0) for u in urls]
+    for u, lim in net_urls:
+        if _fetch_one(u, dest, expect_sha1, expect_size, min_speed=lim):
             # 3. 缓存到本地镜像, 下次秒取
             try:
                 os.makedirs(os.path.dirname(_mirror_path(u)), exist_ok=True)
