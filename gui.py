@@ -212,6 +212,10 @@ class _EmitIO:
     def flush(self):
         pass
 
+    def isatty(self):
+        # 非终端: core.c() 着色函数会查 isatty, 缺失导致停止流程中途抛异常
+        return False
+
 
 class StopThread(QThread):
     log = Signal(str)
