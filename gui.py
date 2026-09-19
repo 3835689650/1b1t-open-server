@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
                                QListWidget, QListWidgetItem, QMainWindow,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QRadioButton, QComboBox, QVBoxLayout, QWidget,
-                               QGridLayout, QButtonGroup)
+                               QGridLayout, QButtonGroup, QStackedWidget,
+                               QScrollArea)
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -113,6 +114,8 @@ QListWidget::item:selected {{ background: rgba(10,132,255,50);
     border-radius: 14px; padding: 10px; font-family: "SF Mono", Consolas,
     monospace; font-size: 12px;
 }}
+QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent;
+    border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
 QScrollBar::handle:vertical {{ background: rgba(255,255,255,40);
     border-radius: 4px; min-height: 30px; }}
@@ -123,6 +126,14 @@ QRadioButton {{ font-size: 13px; spacing: 6px; }}
 QRadioButton::indicator {{ width: 16px; height: 16px; border-radius: 8px;
     border: 1px solid rgba(255,255,255,60); background: transparent; }}
 QRadioButton::indicator:checked {{ background: {ACCENT}; border: none; }}
+QPushButton#SegBtn {{ background: rgba(255,255,255,12); border: none;
+    border-radius: 10px; padding: 5px 14px; color: {DIM}; font-size: 12px; }}
+QPushButton#SegBtn:checked {{ background: rgba(10,132,255,60);
+    color: {TEXT}; }}
+QPlainTextEdit {{ background: rgba(0,0,0,72);
+    border: 1px solid rgba(255,255,255,20); border-radius: 10px;
+    padding: 8px; font-family: "SF Mono", Consolas, monospace;
+    font-size: 12px; }}
 """
 
 
@@ -158,13 +169,18 @@ class StartThread(QThread):
         self.server_dir, self.cfg = server_dir, cfg
 
     def run(self):
-        ok, detail = core.api_start(self.server_dir, self.cfg,
-                                    self.log.emit)
-        if not ok and not detail:
-            # 启动进程失败: 取日志尾部关键报错行提示用户
-            detail = core._tail_error(self.server_dir) or \
-                "服务器进程启动失败, 请展开日志查看详情"
-        self.done.emit(ok, detail or "")
+        try:
+            ok, detail = core.api_start(self.server_dir, self.cfg,
+                                        self.log.emit)
+            if not ok and not detail:
+                # 启动进程失败: 取日志尾部关键报错行提示用户
+                detail = core._tail_error(self.server_dir) or \
+                    "服务器进程启动失败, 请展开日志查看详情"
+            self.done.emit(ok, detail or "")
+        except BaseException as e:
+            # 任何异常(缺 Java 的 SystemExit/网络失败等)都要发 done,
+            # 否则启动按钮永久禁用 → "启动不了"
+            self.done.emit(False, f"启动过程出错: {e}")
 
 
 class BackupThread(QThread):
@@ -196,6 +212,10 @@ class _EmitIO:
     def flush(self):
         pass
 
+    def isatty(self):
+        # 非终端: core.c() 着色函数会查 isatty, 缺失导致停止流程中途抛异常
+        return False
+
 
 class StopThread(QThread):
     log = Signal(str)
@@ -207,9 +227,12 @@ class StopThread(QThread):
 
     def run(self):
         import contextlib
-        with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
-            core.do_stop(self.server_dir)
-        self.done.emit()
+        try:
+            with contextlib.redirect_stdout(_EmitIO(self.log.emit)):
+                core.do_stop(self.server_dir)
+        except BaseException as e:
+            self.log.emit(f"[错误] 停止过程出错: {e}")
+        self.done.emit()  # 保证 done 一定发出, 停止按钮不卡死
 
 
 class ModVersThread(QThread):
@@ -542,7 +565,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("1b1t 开服工具")
         self.setWindowFlags(Qt.FramelessWindowHint)
-        self.resize(980, 640)
+        # 固定窗口尺寸: 防止详情页内容把窗口撑高(侧边栏底部按钮被挤出)
+        self.setFixedSize(980, 640)
         self.drag_pos = None
         self.current = None  # 当前选中服务器目录
         self.log_offset = 0
@@ -581,19 +605,16 @@ class MainWindow(QMainWindow):
         sv = QVBoxLayout(side)
         sv.setContentsMargins(18, 22, 18, 16)
         sv.setSpacing(12)
-        # logo 行: 红绿灯窗口控制(始终可见) + 1b1t 标题
+        # logo 行: 窗口控制按钮(红=关闭 黄=最小化) + 1b1t 标题
         logo_row = QHBoxLayout()
         logo_row.setSpacing(8)
         self.win_close = self._win_btn("✕", "#FF5F57", "#FF3B30")
         self.win_close.clicked.connect(self.close)
         self.win_min = self._win_btn("−", "#FEBC2E", "#FF9F0A")
         self.win_min.clicked.connect(self.showMinimized)
-        self.win_max = self._win_btn("＋", "#28C840", "#30D158")
-        self.win_max.clicked.connect(self.toggle_max)
         self.win_close.setToolTip("关闭")
         self.win_min.setToolTip("最小化")
-        self.win_max.setToolTip("最大化/还原")
-        for b in (self.win_close, self.win_min, self.win_max):
+        for b in (self.win_close, self.win_min):
             logo_row.addWidget(b)
         logo = QLabel("1b1t")
         logo.setObjectName("Logo")
@@ -603,20 +624,16 @@ class MainWindow(QMainWindow):
         tag = QLabel("Minecraft 一键开服")
         tag.setObjectName("Tagline")
         sv.addWidget(tag)
-        # ---- 侧边栏导航: 主页 / 服务器 / 设置 ----
+        # ---- 侧边栏: 主页入口 + 服务器列表直接放 + 设置固定在底部 ----
         self.nav_btns = {}
-        for key, name in (("home", "🏠 主页"),
-                          ("servers", "🖥 服务器"),
-                          ("settings", "⚙ 设置")):
-            b = QPushButton(name)
-            b.setObjectName("NavBtn")
-            b.setCheckable(True)
-            b.clicked.connect(
-                lambda _c, k=key: self.nav_to(k))
-            sv.addWidget(b)
-            self.nav_btns[key] = b
-        self.nav_btns["home"].setChecked(True)
-        # 新建 + 服务器列表 (点"服务器"导航时高亮)
+        home_btn = QPushButton("🏠 主页")
+        home_btn.setObjectName("NavBtn")
+        home_btn.setCheckable(True)
+        home_btn.setChecked(True)
+        home_btn.clicked.connect(lambda _c: self.nav_to("home"))
+        sv.addWidget(home_btn)
+        self.nav_btns["home"] = home_btn
+        # 新建 + 服务器列表 (直接放在侧边栏)
         new_btn = QPushButton("＋ 新建服务器")
         new_btn.setObjectName("Primary")
         new_btn.clicked.connect(self.new_server)
@@ -624,7 +641,11 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.currentItemChanged.connect(self.on_select)
         sv.addWidget(self.list, 1)
-        # 侧边栏底部: 版本号 (设置入口只在导航)
+        # 侧边栏底部: 设置 + 版本号
+        set_btn = QPushButton("⚙ 设置")
+        set_btn.setObjectName("NavBtn")
+        set_btn.clicked.connect(self.open_settings)
+        sv.addWidget(set_btn)
         ver_lab = QLabel(f"v{core.APP_VERSION}")
         ver_lab.setStyleSheet(f"color:{DIM};font-size:11px")
         sv.addWidget(ver_lab)
@@ -720,11 +741,32 @@ class MainWindow(QMainWindow):
         btns.addStretch(1)
         mv.addLayout(btns)
 
-        # 设置卡片
+        # 设置卡片: 简单(快捷项) / 高级(server.properties 全部项)
+        set_head = QHBoxLayout()
         set_title = QLabel("服务器设置")
         set_title.setObjectName("CardTitle")
-        mv.addWidget(set_title)
-        form = QGridLayout()
+        set_head.addWidget(set_title)
+        set_head.addStretch(1)
+        self.set_simple_btn = QPushButton("简单")
+        self.set_adv_btn = QPushButton("高级")
+        for b in (self.set_simple_btn, self.set_adv_btn):
+            b.setCheckable(True)
+            b.setObjectName("SegBtn")
+            set_head.addWidget(b)
+        self.set_simple_btn.setChecked(True)
+        self.set_simple_btn.clicked.connect(lambda: self.switch_set_mode(0))
+        self.set_adv_btn.clicked.connect(lambda: self.switch_set_mode(1))
+        self.run_hint = QLabel("⚠ 运行中: 请先停止服务器再修改设置")
+        self.run_hint.setStyleSheet(f"color:{YELLOW};font-size:12px")
+        self.run_hint.hide()
+        set_head.addWidget(self.run_hint)
+        mv.addLayout(set_head)
+
+        # 简单模式: 快捷配置表单
+        self.set_stack = QStackedWidget()
+        simple_w = QWidget()
+        form = QGridLayout(simple_w)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
         form.addWidget(QLabel("服务器名字"), 0, 0)
@@ -746,22 +788,31 @@ class MainWindow(QMainWindow):
         self.cb_ram.addItems(["2G", "4G", "8G", "16G", "32G"])
         self.cb_ram.setEditable(True)
         form.addWidget(self.cb_ram, 2, 1)
-        save_btn = QPushButton("保存设置")
-        save_btn.clicked.connect(self.save_settings)
-        form.addWidget(save_btn, 2, 3)
-        form.addWidget(QLabel("自定义背景"), 3, 0)
-        bgrow = QHBoxLayout()
-        self.bg_name = QLabel("(无, 深色背景)")
-        self.bg_name.setStyleSheet(f"color:{DIM};font-size:12px")
-        bgrow.addWidget(self.bg_name, 1)
-        pick_bg = QPushButton("选择图片")
-        pick_bg.clicked.connect(self.pick_background)
-        clear_bg = QPushButton("清除")
-        clear_bg.clicked.connect(self.clear_background)
-        bgrow.addWidget(pick_bg)
-        bgrow.addWidget(clear_bg)
-        form.addLayout(bgrow, 3, 1, 1, 3)
-        mv.addLayout(form)
+        self.save_btn = QPushButton("保存设置")
+        self.save_btn.clicked.connect(self.save_settings)
+        form.addWidget(self.save_btn, 2, 3)
+        self.set_stack.addWidget(simple_w)
+
+        # 高级模式: 编辑 server.properties 全部项 (key=value)
+        adv_w = QWidget()
+        av = QVBoxLayout(adv_w)
+        av.setContentsMargins(0, 0, 0, 0)
+        av.setSpacing(8)
+        adv_tip = QLabel("编辑 server.properties 全部配置项"
+                         " (key=value, # 开头的注释行会被忽略)")
+        adv_tip.setStyleSheet(f"color:{DIM};font-size:12px")
+        av.addWidget(adv_tip)
+        self.ed_props = QPlainTextEdit()
+        self.ed_props.setMinimumHeight(240)
+        av.addWidget(self.ed_props)
+        adv_save_row = QHBoxLayout()
+        adv_save_row.addStretch(1)
+        self.adv_save_btn = QPushButton("保存高级配置")
+        self.adv_save_btn.clicked.connect(self.save_settings_advanced)
+        adv_save_row.addWidget(self.adv_save_btn)
+        av.addLayout(adv_save_row)
+        self.set_stack.addWidget(adv_w)
+        mv.addWidget(self.set_stack)
 
         # 存档备份
         self.backup_card = QWidget()
@@ -838,6 +889,7 @@ class MainWindow(QMainWindow):
         self.logbox.setObjectName("LogBox")
         self.logbox.setReadOnly(True)
         self.logbox.setMaximumBlockCount(5000)  # 防内存无限增长
+        self.logbox.setMinimumHeight(140)  # 滚动布局下日志区保持可用高度
         mv.addWidget(self.logbox, 1)
         # 控制台命令输入 (发到服务器控制台)
         cmd_row = QHBoxLayout()
@@ -851,11 +903,15 @@ class MainWindow(QMainWindow):
         cmd_row.addWidget(send_btn)
         mv.addLayout(cmd_row)
         # 右侧用 QStackedWidget 切换主页/详情 (可靠, 无 z-order 问题)
-        from PySide6.QtWidgets import QStackedWidget
+        # 详情页包进滚动区: 固定窗口下设置表单不被挤压成 6px
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(main)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.home_page)  # index 0
-        self.stack.addWidget(main)            # index 1
-        self.main_page = main
+        self.stack.addWidget(scroll)          # index 1
+        self.main_page = scroll
         grid.addWidget(self.stack, 0, 1)
 
         # 日志轮询
@@ -966,11 +1022,13 @@ class MainWindow(QMainWindow):
                     " border-radius: 20px;"
                     " border: 1px solid rgba(255,255,255,30);"
                     " border-top: 1px solid rgba(255,255,255,60); }")
-                self.bg_name.setText(os.path.basename(bg))
+                if hasattr(self, "bg_name"):
+                    self.bg_name.setText(os.path.basename(bg))
                 return
         self.bg_label.hide()
         self.centralWidget().setStyleSheet("")  # 恢复默认不透明深色
-        self.bg_name.setText("(无, 深色背景)")
+        if hasattr(self, "bg_name"):
+            self.bg_name.setText("(无, 深色背景)")
 
     def pick_background(self):
         f, _ = QFileDialog.getOpenFileName(
@@ -1009,28 +1067,26 @@ class MainWindow(QMainWindow):
             if select == d:
                 self.list.setCurrentItem(item)
         self.list.blockSignals(False)
+        # 信号被屏蔽时 setCurrentItem 不触发 on_select,
+        # 显式补一次 (否则新建后点侧边栏该服务器进不了详情页)
+        if select:
+            self.on_select(self.list.currentItem(), None)
 
     def nav_to(self, key):
-        """侧边栏导航: 主页/服务器/设置"""
-        for k, b in self.nav_btns.items():
-            b.setChecked(k == key)
-        if key == "home":
-            # 只切视图, 保留服务器选择 (点"服务器"导航可回来)
-            self.list.blockSignals(True)
-            self.list.clearSelection()
-            self.list.blockSignals(False)
-            self.stack.setCurrentIndex(0)
-            self.refresh_home_stats()
-            self.update_state()
-        elif key == "servers":
-            # 聚焦服务器列表: 有选中项进详情, 否则留在主页
-            if self.current:
-                self.stack.setCurrentIndex(1)
-            else:
-                self.stack.setCurrentIndex(0)
-                self.refresh_home_stats()
-        elif key == "settings":
-            self.open_settings()
+        """侧边栏主页入口: 切回主页视图 (保留服务器选择)"""
+        if key != "home":
+            return
+        self.list.blockSignals(True)
+        self.list.clearSelection()
+        # 必须同时清 currentItem: clearSelection 只清高亮不清内部
+        # currentItem, 否则再点同一个服务器不触发 currentItemChanged
+        # → 进不了详情页
+        self.list.setCurrentItem(None)
+        self.list.blockSignals(False)
+        self.stack.setCurrentIndex(0)
+        self.nav_btns["home"].setChecked(True)
+        self.refresh_home_stats()
+        self.update_state()
 
     def on_select(self, item, prev):
         if item is None:
@@ -1045,7 +1101,7 @@ class MainWindow(QMainWindow):
         d = item.data(Qt.UserRole)
         self.current = d
         self.stack.setCurrentIndex(1)
-        self.nav_btns["servers"].setChecked(True)
+        self.nav_btns["home"].setChecked(False)
         self.log_offset = 0
         self.logbox.clear()
         cfg = core.load_cfg(d)
@@ -1090,6 +1146,10 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.restart_btn.setEnabled(True)
+            # 运行中禁止改配置: 提示 + 保存按钮禁用 (停服后可改)
+            self.run_hint.show()
+            self.save_btn.setEnabled(False)
+            self.adv_save_btn.setEnabled(False)
         else:
             self.dot.setStyleSheet(f"color:{DIM};font-size:16px")
             self.state_lab.setText("已停止")
@@ -1097,6 +1157,9 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(self.current is not None)
             self.stop_btn.setEnabled(False)
             self.restart_btn.setEnabled(False)
+            self.run_hint.hide()
+            self.save_btn.setEnabled(self.current is not None)
+            self.adv_save_btn.setEnabled(self.current is not None)
 
     # ---------- 日志 ----------
     def append_log(self, text):
@@ -1216,6 +1279,9 @@ class MainWindow(QMainWindow):
             return
         cfg = core.load_cfg(self.current)
         if not cfg:
+            QMessageBox.warning(self, "启动失败",
+                                "服务器配置不存在或损坏, 无法启动\n\n"
+                                "可删除后重新创建该服务器")
             return
         self.append_log("========== 启动 ==========")
         self.start_btn.setEnabled(False)
@@ -1278,6 +1344,7 @@ class MainWindow(QMainWindow):
         self.append_log(f"已删除: {d}")
         self.current = None
         self.refresh_list()
+        self.nav_to("home")  # 删除后返回主页
 
     # ---------- 存档备份 ----------
     BAK_PLAN = {0: 0, 1: 30, 2: 60, 3: 120, 4: 360, 5: 720, 6: 1440}
@@ -1486,8 +1553,64 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(d))
 
     # ---------- 保存设置 ----------
+    def _is_running(self):
+        """当前服务器是否在运行 (停服后才能改配置)"""
+        if not self.current:
+            return False
+        old = core.read_pid(self.current)
+        return bool(old and core.is_running(old["pid"]))
+
+    def _need_stop_warn(self):
+        """运行中修改配置 → 提示先停服, 返回 True 表示要拦截"""
+        if self._is_running():
+            QMessageBox.warning(
+                self, "服务器运行中",
+                "请先停止服务器再修改设置\n\n"
+                "配置在服务器下次启动时生效")
+            return True
+        return False
+
+    def switch_set_mode(self, idx):
+        """设置卡片 简单/高级 切换; 切到高级时载入全部配置项"""
+        self.set_simple_btn.setChecked(idx == 0)
+        self.set_adv_btn.setChecked(idx == 1)
+        self.set_stack.setCurrentIndex(idx)
+        if idx == 1 and self.current:
+            cfg = core.load_cfg(self.current) or {}
+            self.ed_props.setPlainText(core.render_properties(
+                cfg.get("props", {})))
+
+    def save_settings_advanced(self):
+        """高级模式保存: 解析 key=value 全部项写回 server.properties"""
+        if not self.current:
+            return
+        if self._need_stop_warn():
+            return
+        props = {}
+        for line in self.ed_props.toPlainText().splitlines():
+            line = line.split("#")[0].strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                props[k.strip()] = v.strip()
+        if not props:
+            QMessageBox.warning(self, "参数错误",
+                                "没有解析到任何配置项 (格式: key=value)")
+            return
+        cfg = core.load_cfg(self.current) or {}
+        cfg["props"] = props
+        if props.get("server-port", "").isdigit():
+            cfg["port"] = int(props["server-port"])
+        core.save_cfg(self.current, cfg)
+        with open(os.path.join(self.current, "server.properties"),
+                  "w") as f:
+            f.write(core.render_properties(props))
+        self.append_log("已保存高级配置 (重启后生效)")
+        self.on_select(self.list.currentItem(), None)
+
     def save_settings(self):
         if not self.current:
+            return
+        if self._need_stop_warn():
             return
         cfg = core.load_cfg(self.current)
         if not cfg:
@@ -1533,6 +1656,14 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    if len(sys.argv) > 3 and sys.argv[1] == "__sub":
+        # 内部子进程入口 (服务器 keeper/收尾进程):
+        # 冻结后 "二进制 -c 代码" 跑不起来, 统一走 __sub
+        if sys.argv[2] == "keeper":
+            core.run_keeper(sys.argv[3])
+        elif sys.argv[2] == "cleanup":
+            core.run_cleanup(sys.argv[3])
+        return
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
     win = MainWindow()
