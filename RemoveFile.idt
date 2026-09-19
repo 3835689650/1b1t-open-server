@@ -1,5 +1,0 @@
-FileKey	Component_	FileName	DirProperty	InstallMode
-s72	s72	L255	s72	i2
-RemoveFile	FileKey
-rf1	startcomp		PROGDIR	2
-rf2	deskcomp		DesktopFolder	2
