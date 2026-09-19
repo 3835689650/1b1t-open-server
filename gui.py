@@ -891,6 +891,25 @@ class MainWindow(QMainWindow):
         self.logbox.setMaximumBlockCount(5000)  # 防内存无限增长
         self.logbox.setMinimumHeight(140)  # 滚动布局下日志区保持可用高度
         mv.addWidget(self.logbox, 1)
+        # 常用指令快捷按钮: 前四个点一下直接发, 后两个填进输入框补参数
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(6)
+        quick_tip = QLabel("常用指令:")
+        quick_tip.setStyleSheet(f"color:{DIM};font-size:12px")
+        quick_row.addWidget(quick_tip)
+        for text, cmd in (("在线玩家", "list"), ("保存世界", "save-all"),
+                          ("白天", "time set day"), ("晴天", "weather clear")):
+            b = QPushButton(text)
+            b.setToolTip(f"发送: {cmd}")
+            b.clicked.connect(lambda _c, c=cmd: self.quick_cmd(c))
+            quick_row.addWidget(b)
+        for text, pre in (("公告", "say "), ("白名单", "whitelist add ")):
+            b = QPushButton(text)
+            b.setToolTip(f"填好指令等你补全后回车")
+            b.clicked.connect(lambda _c, p=pre: self.fill_cmd(p))
+            quick_row.addWidget(b)
+        quick_row.addStretch(1)
+        mv.addLayout(quick_row)
         # 控制台命令输入 (发到服务器控制台)
         cmd_row = QHBoxLayout()
         cmd_row.setSpacing(8)
@@ -1192,6 +1211,16 @@ class MainWindow(QMainWindow):
             self.log_win = LogWindow(self)
         self.log_win.show()
         self.log_win.raise_()
+
+    def quick_cmd(self, cmd):
+        """常用指令快捷按钮: 直接发送 (list/save-all/time set day/weather clear)"""
+        self.cmd_in.setText(cmd)
+        self.send_cmd()
+
+    def fill_cmd(self, pre):
+        """需要参数的指令 (say / whitelist add): 填进输入框等用户补全"""
+        self.cmd_in.setText(pre)
+        self.cmd_in.setFocus()
 
     def send_cmd(self):
         """把输入的命令发到服务器控制台 (如 say/list/stop)"""
