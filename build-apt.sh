@@ -265,16 +265,14 @@ api_put() { # 本地文件 仓库路径 分支
         fi
     fi
 }
-# main 分支全量文件 (脚本/文档/apt 目录/三平台包)
-# 注意: find 输出不带目录前缀, 必须手动加回 apt/ download/ 前缀,
-# 否则后面 case download/* 的版本过滤永远不生效, 且存在检测会误检根目录
+# main 分支全量文件 (脚本/文档/三平台包)
+# 注意: find 输出不带目录前缀, 必须手动加回 download/ 前缀,
+# 否则 case download/* 的版本过滤不生效, 存在检测误检根目录
+# apt/ 不推 main: 历史 deb 各在自身 Release + gh-pages, 重传浪费 1.6GB
 MAIN_FILES=()
 for f in 1b1t gui.py assets/logo.jpeg assets/1b1t.png README.md LICENSE \
          CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg; do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
-done
-for f in $(cd apt && find . -type f | sed 's|^\./||'); do
-    [ -f "$ROOT/apt/$f" ] && MAIN_FILES+=("apt/$f")
 done
 for f in $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
     [ -f "$ROOT/download/$f" ] && MAIN_FILES+=("download/$f")
@@ -306,6 +304,9 @@ if git worktree add -B gh-pages "$WORK/pages" --quiet 2>/dev/null; then
     else
         echo "  gh-pages: git push 失败, 走 API"
         for f in $(cd apt && find . -type f | sed 's|^\./||'); do
+            # pool 里的历史 deb 不重传 (都在各自 Release 资产里,
+            # 重传 1.6GB 拖死发布), 只推小索引文件
+            case "$f" in pool/*) continue ;; esac
             api_put "$ROOT/apt/$f" "$f" gh-pages || true
         done
     fi
@@ -313,6 +314,7 @@ if git worktree add -B gh-pages "$WORK/pages" --quiet 2>/dev/null; then
 else
     echo "  gh-pages: git push 失败, 走 API"
     for f in $(cd apt && find . -type f | sed 's|^\./||'); do
+        case "$f" in pool/*) continue ;; esac
         api_put "$ROOT/apt/$f" "$f" gh-pages || true
     done
 fi
