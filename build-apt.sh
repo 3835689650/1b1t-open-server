@@ -302,9 +302,9 @@ fi
 
 echo "==> 5/5 更新官网更新日志并部署"
 if [ -f "$SITE_SRC" ]; then
-    python3 - "$ROOT" "$SITE_SRC" <<'PY'
+    python3 - "$ROOT" "$SITE_SRC" "$VER" <<'PY'
 import re, sys
-root, site = sys.argv[1], sys.argv[2]
+root, site, ver = sys.argv[1], sys.argv[2], sys.argv[3]
 cl = open(root + "/CHANGELOG.md").read()
 entries = re.findall(r"^## (v[\d.]+) - (\d{4}-\d{2}-\d{2})\n(.*?)(?=^## |\Z)", cl, re.S | re.M)
 def render(ver, date, body):
@@ -325,9 +325,9 @@ page = re.sub(
     page, flags=re.S)
 # 顶部版本徽章同步为实际最新版本号 (整合版 changelog 条目名 ≠ 实际版本)
 if entries:
-    page = re.sub(r'(badge">)v+[\d.]+', r"\1v$VER", page)
+    page = re.sub(r'(badge">)v+[\d.]+', r"\1v" + ver, page)
 open(site, "w").write(page)
-print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v$VER")
+print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v{ver}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
     [ -f "$DOCS_SRC" ] && sudo mkdir -p "$(dirname "$SITE_DST")/docs" \
