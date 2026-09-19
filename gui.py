@@ -33,6 +33,13 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
+
+def _asset_path(name):
+    """资源文件路径: 打包后在一键包临时目录, 开发时在脚本目录"""
+    base = getattr(sys, "_MEIPASS",
+                   os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", name)
+
 # ---------- 液态玻璃主题 (苹果风) ----------
 ACCENT = "#0A84FF"      # iOS 蓝
 GREEN = "#30D158"
@@ -620,6 +627,25 @@ class MainWindow(QMainWindow):
         self.win_min.setToolTip("最小化")
         for b in (self.win_close, self.win_min):
             logo_row.addWidget(b)
+        # 品牌 logo: 云盘 assets/logo.jpeg (打包时随二进制内置)
+        logo_icon = QLabel()
+        logo_icon.setFixedSize(32, 32)
+        pm = QPixmap(_asset_path("logo.jpeg"))
+        if not pm.isNull():
+            from PySide6.QtGui import QPainterPath
+            pm = pm.scaled(32, 32, Qt.IgnoreAspectRatio,
+                           Qt.SmoothTransformation)
+            rounded = QPixmap(32, 32)
+            rounded.fill(Qt.transparent)
+            p = QPainter(rounded)
+            p.setRenderHint(QPainter.Antialiasing)
+            clip = QPainterPath()
+            clip.addRoundedRect(0, 0, 32, 32, 8, 8)
+            p.setClipPath(clip)
+            p.drawPixmap(0, 0, pm)
+            p.end()
+            logo_icon.setPixmap(rounded)
+        logo_row.addWidget(logo_icon)
         logo = QLabel("1b1t")
         logo.setObjectName("Logo")
         logo_row.addWidget(logo)
@@ -1688,6 +1714,72 @@ class MainWindow(QMainWindow):
         self.on_select(self.list.currentItem(), None)
 
 
+def _make_splash(pm):
+    """启动封面: 深色玻璃卡片 + 圆角 logo + 1b1t 标题"""
+    from PySide6.QtWidgets import QSplashScreen
+    from PySide6.QtGui import QPainterPath, QPen
+    W, H = 400, 460
+    canvas = QPixmap(W, H)
+    canvas.fill(Qt.transparent)
+    p = QPainter(canvas)
+    p.setRenderHint(QPainter.Antialiasing)
+    card = QPainterPath()
+    card.addRoundedRect(0, 0, W, H, 28, 28)
+    p.fillPath(card, QColor(28, 28, 33, 235))
+    p.setPen(QPen(QColor(255, 255, 255, 36), 1))
+    p.drawPath(card)
+    logo_pm = pm.scaled(280, 280, Qt.IgnoreAspectRatio,
+                        Qt.SmoothTransformation)
+    clip = QPainterPath()
+    clip.addRoundedRect(60, 48, 280, 280, 24, 24)
+    p.setClipPath(clip)
+    p.drawPixmap(60, 48, logo_pm)
+    p.setClipping(False)
+    p.setPen(QColor(245, 245, 247))
+    f = QFont()
+    f.setPixelSize(30)
+    f.setBold(True)
+    p.setFont(f)
+    p.drawText(0, 378, W, 40, Qt.AlignCenter, "1b1t")
+    p.setPen(QColor(152, 152, 157))
+    f2 = QFont()
+    f2.setPixelSize(14)
+    p.setFont(f2)
+    p.drawText(0, 414, W, 26, Qt.AlignCenter, "Minecraft 一键开服")
+    p.end()
+    s = QSplashScreen(canvas)
+    s.setWindowFlag(Qt.FramelessWindowHint, True)
+    s.setAttribute(Qt.WA_TranslucentBackground, True)
+    return s
+
+
+def _ensure_desktop_shortcut():
+    """Linux deb 安装: 首次启动在桌面放带 logo 的快捷方式
+    (dock 图标由 .desktop 的 Icon=1b1t + StartupWMClass 关联)"""
+    if not sys.platform.startswith("linux"):
+        return
+    src = "/usr/share/applications/1b1t.desktop"
+    if not os.path.isfile(src):
+        return  # 非 deb 安装 (源码/dev 运行不创建)
+    home = os.path.expanduser("~")
+    for name in ("桌面", "Desktop"):
+        d = os.path.join(home, name)
+        if os.path.isdir(d):
+            dst = os.path.join(d, "1b1t.desktop")
+            if not os.path.exists(dst):
+                try:
+                    import shutil, subprocess
+                    shutil.copy(src, dst)
+                    os.chmod(dst, 0o755)
+                    # GNOME 需 trusted 才显示桌面图标
+                    subprocess.run(
+                        ["gio", "set", dst, "metadata::trusted", "true"],
+                        capture_output=True)
+                except Exception:
+                    pass
+            return
+
+
 def main():
     if len(sys.argv) > 3 and sys.argv[1] == "__sub":
         # 内部子进程入口 (服务器 keeper/收尾进程):
@@ -1699,8 +1791,20 @@ def main():
         return
     app = QApplication(sys.argv)
     app.setStyleSheet(QSS)
+    from PySide6.QtGui import QIcon
+    app.setWindowIcon(QIcon(_asset_path("logo.jpeg")))  # 任务栏/dock/窗口图标
+    _ensure_desktop_shortcut()  # 桌面 logo 快捷方式 (仅 deb 安装, 首次)
     win = MainWindow()
     win.show()
+    # 启动封面: logo 卡片显示 1.4 秒, 主窗口就绪后收掉
+    try:
+        pm = QPixmap(_asset_path("logo.jpeg"))
+    except Exception:
+        pm = QPixmap()
+    if not pm.isNull():
+        splash = _make_splash(pm)
+        splash.show()
+        QTimer.singleShot(1400, lambda: splash.finish(win))
     sys.exit(app.exec())
 
 
