@@ -253,16 +253,23 @@ api_put() { # 本地文件 仓库路径 分支
         gh release upload "v$VER" "$1" --repo "$REPO" --clobber >/dev/null 2>&1
         echo "  Release: $(basename "$1")"
     else
-        local sha b64
+        # base64 内容经命令行参数传递会撞 MAX_ARG_STRLEN(128KB/参数),
+        # 1b1t 超过 96KB 后此路必失败(曾导致 main 上 1b1t 停在旧版,
+        # Windows 包核心全部带旧代码) → 必须走 --input 请求体文件
         sha=$(gh api "repos/$REPO/contents/$2?ref=$3" --jq '.sha' 2>/dev/null || true)
-        b64=$(base64 -w0 "$1")
-        if [ -n "$sha" ]; then
-            gh api "repos/$REPO/contents/$2" -X PUT -f message="release $VER" \
-                -f branch="$3" -f sha="$sha" -f content="$b64" --jq '.commit.sha' >/dev/null
-        else
-            gh api "repos/$REPO/contents/$2" -X PUT -f message="release $VER" \
-                -f branch="$3" -f content="$b64" --jq '.commit.sha' >/dev/null
-        fi
+        python3 - "$1" "$2" "$3" "$sha" "$VER" <<'PY'
+import base64, json, subprocess, sys
+path, remote, branch, sha, ver = sys.argv[1:6]
+body = {"message": "release " + ver, "branch": branch,
+        "content": base64.b64encode(open(path, "rb").read()).decode()}
+if sha:
+    body["sha"] = sha
+r = subprocess.run(
+    ["gh", "api", f"repos/3835689650/1b1t-open-server/contents/{remote}",
+     "-X", "PUT", "--input", "-"],
+    input=json.dumps(body), capture_output=True, timeout=120, text=True)
+sys.exit(r.returncode)
+PY
     fi
 }
 # main 分支全量文件 (脚本/文档/三平台包)
