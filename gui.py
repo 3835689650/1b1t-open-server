@@ -1465,6 +1465,9 @@ class MainWindow(QMainWindow):
         if mins <= 0:
             return
         cfg = core.load_cfg(self.current)
+        # 世界还没生成时(新服刚开)不备份也不报错刷屏, 等世界出现
+        if not core.world_dirs(self.current, cfg):
+            return
         last = (cfg or {}).get("last_backup", 0)
         attempt = (cfg or {}).get("last_backup_attempt", 0)
         # 失败后至少 10 分钟再试 (备份是重活, 不能每秒重试)
