@@ -71,7 +71,7 @@ def mirror_http():
     return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
-APP_VERSION = "1.0.50"  # 发版时更新 (version 子命令显示)
+APP_VERSION = "1.0.51"  # 发版时更新 (version 子命令显示)
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
@@ -2378,6 +2378,10 @@ def main():
         return 0
     if args and args[0] in ("version", "-V", "--version"):
         print(f"{APP} v{APP_VERSION}")
+        # 更新通知: 有新版时提示 (网络失败静默跳过)
+        latest = check_update(timeout=3)
+        if latest and _ver_tuple(latest) > _ver_tuple(APP_VERSION):
+            print(c(f"  发现新版本 v{latest} → {UPDATE_URL}", "yellow"))
         return 0
     if args and args[0] == "__sub":
         # 内部子进程入口: keeper(TCP 控制台转发) / cleanup(stop 收尾)
