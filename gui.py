@@ -124,6 +124,9 @@ QListWidget::item:selected {{ background: rgba(10,132,255,50);
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent;
     border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; }}
+#UpdateBanner {{ background: rgba(255,214,10,22);
+    border: 1px solid rgba(255,214,10,70); border-radius: 10px;
+    padding: 9px 14px; font-size: 13px; }}
 QScrollBar::handle:vertical {{ background: rgba(255,255,255,40);
     border-radius: 4px; min-height: 30px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
@@ -190,6 +193,14 @@ class StartThread(QThread):
             import traceback
             tb = traceback.format_exc(limit=3)
             self.done.emit(False, f"启动过程出错: {e}\n{tb}")
+
+
+class UpdateCheckThread(QThread):
+    """启动时后台检查官网最新版本 (网络失败发空串)"""
+    done = Signal(str)
+
+    def run(self):
+        self.done.emit(core.check_update(timeout=6) or "")
 
 
 class BackupThread(QThread):
@@ -762,6 +773,13 @@ class MainWindow(QMainWindow):
         self.home_stats.setStyleSheet(
             f"color:{DIM};font-size:13px;margin-top:4px")
         hv.addWidget(self.home_stats)
+        # 更新通知横幅 (有新版时显示)
+        self.update_banner = QLabel("")
+        self.update_banner.setObjectName("UpdateBanner")
+        self.update_banner.setTextFormat(Qt.RichText)
+        self.update_banner.linkActivated.connect(self._open_update)
+        self.update_banner.hide()
+        hv.addWidget(self.update_banner)
         hv.addSpacing(10)
         # 快捷入口卡片 (设置入口只在侧边栏导航)
         for text, icon, handler in (
@@ -1038,8 +1056,28 @@ class MainWindow(QMainWindow):
         # 初始显示主页
         self.stack.setCurrentIndex(0)
         self.refresh_home_stats()
+        # 更新检查 (后台线程)
+        self.update_thread = UpdateCheckThread(self)
+        self.update_thread.done.connect(self._on_update_check)
+        self.update_thread.start()
         # 首次启动: OOBE 欢迎 + 向导 (主窗口就绪后弹出)
         QTimer.singleShot(500, self._maybe_first_run)
+
+    def _on_update_check(self, latest):
+        """发现新版本 → 主页顶部横幅 (点击去官网下载)"""
+        if not latest:
+            return
+        if core._ver_tuple(latest) > core._ver_tuple(core.APP_VERSION):
+            self.update_banner.setText(
+                f'<a href="https://www.1b1t.cn/download/" '
+                f'style="color:{YELLOW};text-decoration:none">'
+                f'发现新版本 v{latest} · 前往官网下载</a>')
+            self.update_banner.show()
+
+    def _open_update(self, url):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl(url))
 
     def _maybe_first_run(self):
         """首次启动显示 Windows OOBE 风格欢迎 + 向导"""
