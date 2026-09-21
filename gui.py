@@ -571,130 +571,68 @@ class NewServerDialog(QDialog):
         return ver, stype, server_dir, port, mod_version
 
 
-class FirstRunDialog(QDialog):
-    """首次启动 OOBE: 欢迎 → 向导(新建第一个服务器/跳过) → 完成
-    (Windows OOBE 风格, 深色玻璃卡片)"""
+class FirstRunWeb(QDialog):
+    """首次启动 OOBE: Qt WebEngine 加载 oobe.html (Windows 11 Fluent 风格)
+    HTML 里全部文案留空, 由本类经 oobe.setContent 运行时注入;
+    用户点主按钮/跳过 → 页面发 console 事件 → 这里接收并关闭"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        from PySide6.QtCore import QUrl
+        from PySide6.QtWebEngineWidgets import QWebEngineView
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(760, 500)
-        self._want_new = False
-        self._page = 0
-        card = QFrame()
-        card.setObjectName("OobeCard")
-        card.setStyleSheet(
-            "#OobeCard { background: rgba(30,30,36,246); border-radius: 24px;"
-            " border: 1px solid rgba(255,255,255,30); }")
+        self.setFixedSize(980, 640)
+        self._want_new = True
+        self._view = QWebEngineView(self)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(40, 40, 40, 40)
-        lay.addWidget(card)
-        cv = QVBoxLayout(card)
-        cv.setContentsMargins(48, 40, 48, 32)
-        cv.setSpacing(14)
-        self.stack = QStackedWidget()
-        cv.addWidget(self.stack, 1)
-        btn_row = QHBoxLayout()
-        self.back_btn = QPushButton("← 返回")
-        self.back_btn.setVisible(False)
-        self.back_btn.clicked.connect(self._back)
-        btn_row.addWidget(self.back_btn)
-        btn_row.addStretch(1)
-        self.next_btn = QPushButton("开始设置 →")
-        self.next_btn.setObjectName("Primary")
-        self.next_btn.clicked.connect(self._next)
-        btn_row.addWidget(self.next_btn)
-        cv.addLayout(btn_row)
-        self.stack.addWidget(self._page_welcome())
-        self.stack.addWidget(self._page_wizard())
-        self.stack.addWidget(self._page_done())
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._view)
+        page = self._view.page()
+        page.javaScriptConsoleMessage = self._on_console
+        base = getattr(sys, "_MEIPASS",
+                       os.path.dirname(os.path.abspath(__file__)))
+        self._view.load(QUrl.fromLocalFile(
+            os.path.join(base, "oobe.html")))
 
-    def _page_welcome(self):
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setSpacing(12)
-        v.addStretch(1)
-        logo = QLabel()
-        pm = QPixmap(_asset_path("logo.jpeg"))
-        if not pm.isNull():
-            logo.setPixmap(pm.scaled(140, 140, Qt.IgnoreAspectRatio,
-                                     Qt.SmoothTransformation))
-        logo.setAlignment(Qt.AlignCenter)
-        v.addWidget(logo)
-        t = QLabel("欢迎使用 1b1t")
-        t.setStyleSheet(f"font-size:30px;font-weight:700;color:{TEXT};")
-        t.setAlignment(Qt.AlignCenter)
-        v.addWidget(t)
-        s = QLabel("Minecraft 一键开服工具 · 图形 + 命令行")
-        s.setStyleSheet(f"font-size:14px;color:{DIM};")
-        s.setAlignment(Qt.AlignCenter)
-        v.addWidget(s)
-        v.addStretch(1)
-        return w
-
-    def _page_wizard(self):
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setSpacing(14)
-        t = QLabel("开始之前")
-        t.setStyleSheet(f"font-size:24px;font-weight:700;color:{TEXT};")
-        v.addWidget(t)
-        s = QLabel("要现在创建你的第一个 Minecraft 服务器吗?\n"
-                   "选好版本和类型, 剩下的下载、Java 匹配、开服全自动。")
-        s.setStyleSheet(f"font-size:14px;color:{DIM};")
-        v.addWidget(s)
-        v.addStretch(1)
-        b1 = QPushButton("＋ 新建第一个服务器\n选版本 → 选类型 → 自动开服")
-        b1.setObjectName("Primary")
-        b1.setFixedHeight(84)
-        b1.clicked.connect(lambda: self._finish(True))
-        v.addWidget(b1)
-        b2 = QPushButton("跳过, 先随便看看")
-        b2.setFixedHeight(56)
-        b2.clicked.connect(lambda: self._finish(False))
-        v.addWidget(b2)
-        v.addStretch(1)
-        return w
-
-    def _page_done(self):
-        w = QWidget()
-        v = QVBoxLayout(w)
-        v.setSpacing(12)
-        v.addStretch(1)
-        t = QLabel("设置完成! 🎉")
-        t.setStyleSheet(f"font-size:26px;font-weight:700;color:{TEXT};")
-        t.setAlignment(Qt.AlignCenter)
-        v.addWidget(t)
-        s = QLabel("左侧边栏管理服务器 · 底部 ⚙ 设置改背景和默认配置\n"
-                   "服务器页面可改配置(简单/高级)、备份存档、发指令")
-        s.setStyleSheet(f"font-size:14px;color:{DIM};")
-        s.setAlignment(Qt.AlignCenter)
-        v.addWidget(s)
-        v.addStretch(1)
-        return w
-
-    def _next(self):
-        self._page = 1
-        self.stack.setCurrentIndex(1)
-        self.back_btn.setVisible(True)
-        self.next_btn.setVisible(False)  # 向导页用两个大按钮选择
-
-    def _back(self):
-        self._page = 0
-        self.stack.setCurrentIndex(0)
-        self.back_btn.setVisible(False)
-        self.next_btn.setVisible(True)
-
-    def _finish(self, want_new):
-        self._want_new = want_new
-        self._page = 2
-        self.stack.setCurrentIndex(2)
-        self.back_btn.setVisible(False)
-        self.next_btn.setVisible(True)
-        self.next_btn.setText("开始使用")
-        self.next_btn.clicked.disconnect()
-        self.next_btn.clicked.connect(self.accept)
+    def _on_console(self, level, msg, line, src):
+        """接收页面事件: oobe:ready → 注入版本号;
+        settings-submit → 保存软件默认配置; server-* → 标记; finish/skip → 关闭"""
+        import json as _json
+        if not msg.startswith("oobe:"):
+            return
+        try:
+            data = _json.loads(msg.split(" ", 1)[1])
+        except (IndexError, ValueError):
+            return
+        if msg.startswith("oobe:ready"):
+            # 提示词要求: 所有展示文案留空由用户自行填写,
+            # 这里只注入动态的版本号 (左下角容器)
+            content = _json.dumps(
+                {"version": "v" + core.APP_VERSION},
+                ensure_ascii=False)
+            self._view.page().runJavaScript(
+                "window.oobe && window.oobe.setContent(" + content + ")")
+        elif msg.startswith("oobe:action"):
+            ev = data.get("event")
+            if ev == "settings-submit":
+                s = data.get("settings", {})
+                st = core.load_settings()
+                st["online_mode"] = "true" if s.get("onlineMode") else "false"
+                st["keep_inventory"] = "true" if s.get("keepInventory") \
+                    else "false"
+                if s.get("difficulty"):
+                    st["difficulty"] = s["difficulty"]
+                if s.get("motd"):
+                    st["motd"] = s["motd"]
+                if s.get("backupPlan"):
+                    st["backup_interval_min"] = str(s["backupPlan"])
+                core.save_settings(st)
+            elif ev == "server-create":
+                self._want_new = True
+            elif ev == "server-skip":
+                self._want_new = False
+            elif ev in ("finish", "skip"):
+                self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -1108,8 +1046,9 @@ class MainWindow(QMainWindow):
         st = core.load_settings()
         if st.get("first_run_done"):
             return
-        dlg = FirstRunDialog(self)
-        want_new = dlg.exec()
+        dlg = FirstRunWeb(self)
+        dlg.exec()
+        want_new = dlg._want_new
         st = core.load_settings()
         st["first_run_done"] = "true"
         core.save_settings(st)
