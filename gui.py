@@ -571,6 +571,132 @@ class NewServerDialog(QDialog):
         return ver, stype, server_dir, port, mod_version
 
 
+class FirstRunDialog(QDialog):
+    """首次启动 OOBE: 欢迎 → 向导(新建第一个服务器/跳过) → 完成
+    (Windows OOBE 风格, 深色玻璃卡片)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(760, 500)
+        self._want_new = False
+        self._page = 0
+        card = QFrame()
+        card.setObjectName("OobeCard")
+        card.setStyleSheet(
+            "#OobeCard { background: rgba(30,30,36,246); border-radius: 24px;"
+            " border: 1px solid rgba(255,255,255,30); }")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(40, 40, 40, 40)
+        lay.addWidget(card)
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(48, 40, 48, 32)
+        cv.setSpacing(14)
+        self.stack = QStackedWidget()
+        cv.addWidget(self.stack, 1)
+        btn_row = QHBoxLayout()
+        self.back_btn = QPushButton("← 返回")
+        self.back_btn.setVisible(False)
+        self.back_btn.clicked.connect(self._back)
+        btn_row.addWidget(self.back_btn)
+        btn_row.addStretch(1)
+        self.next_btn = QPushButton("开始设置 →")
+        self.next_btn.setObjectName("Primary")
+        self.next_btn.clicked.connect(self._next)
+        btn_row.addWidget(self.next_btn)
+        cv.addLayout(btn_row)
+        self.stack.addWidget(self._page_welcome())
+        self.stack.addWidget(self._page_wizard())
+        self.stack.addWidget(self._page_done())
+
+    def _page_welcome(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(12)
+        v.addStretch(1)
+        logo = QLabel()
+        pm = QPixmap(_asset_path("logo.jpeg"))
+        if not pm.isNull():
+            logo.setPixmap(pm.scaled(140, 140, Qt.IgnoreAspectRatio,
+                                     Qt.SmoothTransformation))
+        logo.setAlignment(Qt.AlignCenter)
+        v.addWidget(logo)
+        t = QLabel("欢迎使用 1b1t")
+        t.setStyleSheet(f"font-size:30px;font-weight:700;color:{TEXT};")
+        t.setAlignment(Qt.AlignCenter)
+        v.addWidget(t)
+        s = QLabel("Minecraft 一键开服工具 · 图形 + 命令行")
+        s.setStyleSheet(f"font-size:14px;color:{DIM};")
+        s.setAlignment(Qt.AlignCenter)
+        v.addWidget(s)
+        v.addStretch(1)
+        return w
+
+    def _page_wizard(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(14)
+        t = QLabel("开始之前")
+        t.setStyleSheet(f"font-size:24px;font-weight:700;color:{TEXT};")
+        v.addWidget(t)
+        s = QLabel("要现在创建你的第一个 Minecraft 服务器吗?\n"
+                   "选好版本和类型, 剩下的下载、Java 匹配、开服全自动。")
+        s.setStyleSheet(f"font-size:14px;color:{DIM};")
+        v.addWidget(s)
+        v.addStretch(1)
+        b1 = QPushButton("＋ 新建第一个服务器\n选版本 → 选类型 → 自动开服")
+        b1.setObjectName("Primary")
+        b1.setFixedHeight(84)
+        b1.clicked.connect(lambda: self._finish(True))
+        v.addWidget(b1)
+        b2 = QPushButton("跳过, 先随便看看")
+        b2.setFixedHeight(56)
+        b2.clicked.connect(lambda: self._finish(False))
+        v.addWidget(b2)
+        v.addStretch(1)
+        return w
+
+    def _page_done(self):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(12)
+        v.addStretch(1)
+        t = QLabel("设置完成! 🎉")
+        t.setStyleSheet(f"font-size:26px;font-weight:700;color:{TEXT};")
+        t.setAlignment(Qt.AlignCenter)
+        v.addWidget(t)
+        s = QLabel("左侧边栏管理服务器 · 底部 ⚙ 设置改背景和默认配置\n"
+                   "服务器页面可改配置(简单/高级)、备份存档、发指令")
+        s.setStyleSheet(f"font-size:14px;color:{DIM};")
+        s.setAlignment(Qt.AlignCenter)
+        v.addWidget(s)
+        v.addStretch(1)
+        return w
+
+    def _next(self):
+        self._page = 1
+        self.stack.setCurrentIndex(1)
+        self.back_btn.setVisible(True)
+        self.next_btn.setVisible(False)  # 向导页用两个大按钮选择
+
+    def _back(self):
+        self._page = 0
+        self.stack.setCurrentIndex(0)
+        self.back_btn.setVisible(False)
+        self.next_btn.setVisible(True)
+
+    def _finish(self, want_new):
+        self._want_new = want_new
+        self._page = 2
+        self.stack.setCurrentIndex(2)
+        self.back_btn.setVisible(False)
+        self.next_btn.setVisible(True)
+        self.next_btn.setText("开始使用")
+        self.next_btn.clicked.disconnect()
+        self.next_btn.clicked.connect(self.accept)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -599,11 +725,11 @@ class MainWindow(QMainWindow):
         glass.setObjectName("Glass")
         # 窗口阴影 (无边框窗口必需, 否则玻璃感出不来)
         from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        shadow = QGraphicsDropShadowEffect(glass)
-        shadow.setBlurRadius(40)
-        shadow.setColor(QColor(0, 0, 0, 170))
-        shadow.setOffset(0, 12)
-        glass.setGraphicsEffect(shadow)
+        self.glass_shadow = QGraphicsDropShadowEffect(glass)
+        self.glass_shadow.setBlurRadius(40)
+        self.glass_shadow.setColor(QColor(0, 0, 0, 170))
+        self.glass_shadow.setOffset(0, 12)
+        glass.setGraphicsEffect(self.glass_shadow)
         outer.addWidget(glass)
         grid = QGridLayout(glass)
         grid.setContentsMargins(0, 0, 0, 0)
@@ -974,6 +1100,21 @@ class MainWindow(QMainWindow):
         # 初始显示主页
         self.stack.setCurrentIndex(0)
         self.refresh_home_stats()
+        # 首次启动: OOBE 欢迎 + 向导 (主窗口就绪后弹出)
+        QTimer.singleShot(500, self._maybe_first_run)
+
+    def _maybe_first_run(self):
+        """首次启动显示 Windows OOBE 风格欢迎 + 向导"""
+        st = core.load_settings()
+        if st.get("first_run_done"):
+            return
+        dlg = FirstRunDialog(self)
+        want_new = dlg.exec()
+        st = core.load_settings()
+        st["first_run_done"] = "true"
+        core.save_settings(st)
+        if want_new:
+            self.new_server()
 
     def open_settings(self):
         """软件设置对话框 (版本号/背景/备份计划/默认配置)"""
@@ -1072,11 +1213,16 @@ class MainWindow(QMainWindow):
                     " border-radius: 20px;"
                     " border: 1px solid rgba(255,255,255,30);"
                     " border-top: 1px solid rgba(255,255,255,60); }")
+                # 玻璃透明时阴影会变成黑框, 必须关掉
+                if hasattr(self, "glass_shadow"):
+                    self.glass_shadow.setEnabled(False)
                 if hasattr(self, "bg_name"):
                     self.bg_name.setText(os.path.basename(bg))
                 return
         self.bg_label.hide()
         self.centralWidget().setStyleSheet("")  # 恢复默认不透明深色
+        if hasattr(self, "glass_shadow"):
+            self.glass_shadow.setEnabled(True)
         if hasattr(self, "bg_name"):
             self.bg_name.setText("(无, 深色背景)")
 
