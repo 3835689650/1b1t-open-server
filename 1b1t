@@ -71,7 +71,7 @@ def mirror_http():
     return st.get("mirror_http") or MIRROR_HTTP
 
 APP = "1b1t-open-server"
-APP_VERSION = "1.0.51"  # 发版时更新 (version 子命令显示)
+APP_VERSION = "1.0.52"  # 发版时更新 (version 子命令显示)
 CACHE_DIR = os.path.expanduser("~/.cache/1b1t-open-server")
 MANIFEST_URL = "https://bmclapi2.bangbang93.com/mc/game/version_manifest_v2.json"
 BMCL_VERSION = "https://bmclapi2.bangbang93.com/version/{vid}/json"
@@ -683,6 +683,25 @@ NEOFORGE_META = "https://maven.neoforged.net/releases/net/neoforged/neoforge/mav
 FORGE_META = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
 
 _VERSION_INFO_CACHE = {}
+
+UPDATE_URL = "https://www.1b1t.cn/latest.json"   # 更新检查端点
+
+
+def _ver_tuple(v):
+    """版本号转可比较元组 (非法返回空)"""
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except ValueError:
+        return ()
+
+
+def check_update(timeout=8):
+    """检查官网最新版本号; 网络失败/异常返回 None"""
+    try:
+        data = json.loads(http_get(UPDATE_URL, timeout, retries=1))
+        return data.get("version")
+    except Exception:
+        return None
 
 
 def http_get(url, timeout=30, retries=3):
