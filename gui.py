@@ -616,10 +616,10 @@ class FirstRunWeb(QDialog):
         except (IndexError, ValueError):
             return
         if msg.startswith("oobe:ready"):
-            # 提示词要求: 所有展示文案留空由用户自行填写,
-            # 这里只注入动态的版本号 (左下角容器)
+            # 注入动态内容: 版本号 + 品牌 logo
             content = _json.dumps(
-                {"version": "v" + core.APP_VERSION},
+                {"version": "v" + core.APP_VERSION,
+                 "logo": "file://" + _asset_path("logo.jpeg")},
                 ensure_ascii=False)
             self._view.page().runJavaScript(
                 "window.oobe && window.oobe.setContent(" + content + ")")
