@@ -278,7 +278,7 @@ PY
 # apt/ 不推 main: 历史 deb 各在自身 Release + gh-pages, 重传浪费 1.6GB
 MAIN_FILES=()
 for f in 1b1t gui.py assets/logo.jpeg assets/1b1t.png README.md LICENSE \
-         CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg; do
+         CHANGELOG.md build-apt.sh 1b1t-apt-key.gpg latest.json; do
     [ -f "$ROOT/$f" ] && MAIN_FILES+=("$f")
 done
 for f in $(cd download 2>/dev/null && find . -type f | sed 's|^\./||'); do
@@ -353,9 +353,17 @@ page = re.sub(
 if entries:
     page = re.sub(r'(badge">)v+[\d.]+', r"\1v" + ver, page)
 open(site, "w").write(page)
+# 更新检查端点: 软件启动时读取判断是否有新版
+import json as _j
+open(root + "/latest.json", "w").write(_j.dumps(
+    {"version": ver, "url": "https://www.1b1t.cn/download/"},
+    ensure_ascii=False))
 print(f"  已注入全部 {len(entries)} 个版本条目, 徽章更新为 v{ver}")
 PY
     sudo cp "$SITE_SRC" "$SITE_DST" && sudo chown www:www "$SITE_DST"
+    [ -f "$ROOT/latest.json" ] && sudo cp "$ROOT/latest.json" \
+        "$(dirname "$SITE_DST")/latest.json" \
+        && sudo chown www:www "$(dirname "$SITE_DST")/latest.json"
     [ -f "$DOCS_SRC" ] && sudo mkdir -p "$(dirname "$SITE_DST")/docs" \
         && sudo cp "$DOCS_SRC" "$(dirname "$SITE_DST")/docs/index.html" \
         && sudo chown www:www "$(dirname "$SITE_DST")/docs/index.html"
