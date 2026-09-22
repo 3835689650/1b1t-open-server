@@ -335,8 +335,21 @@ cl = open(root + "/CHANGELOG.md").read()
 entries = re.findall(r"^## (v[\d.]+) - (\d{4}-\d{2}-\d{2})\n(.*?)(?=^## |\Z)", cl, re.S | re.M)
 def render(ver, date, body):
     # 每个版本一个可展开的卡片, 点击查看详细变更
+    # 卡片内带该版本对应的安装包下载链接 (存在的才显示)
+    import os as _os
     html = ['<details class="ver-card">',
             f'<summary><b>{ver}</b> <span class="vdate">{date}</span></summary>']
+    dl = []
+    for f, label in (("windows.msi", "Windows MSI"),
+                     ("macos.dmg", "macOS dmg"),
+                     ("amd64.deb", "Linux deb")):
+        fn = f"1b1t-open-server_{ver}_{f}"
+        if _os.path.exists(_os.path.join(root, "download", fn)):
+            dl.append(f'<a class="dl-link" href='
+                      f'"https://cn-nb1.rains3.com/1b1t/download/{fn}">'
+                      f'{label}</a>')
+    if dl:
+        html.append('<div class="dl-row">下载: ' + "\n".join(dl) + "</div>")
     for m in re.finditer(r"^### (\S+)\n((?:- .*\n?)+)", body, re.M):
         items = "".join(f"<li>{i[2:]}</li>" for i in m.group(2).strip().splitlines())
         html.append(f'<div class="tag">{m.group(1)}</div><ul>{items}</ul>')
