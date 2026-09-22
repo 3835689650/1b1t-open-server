@@ -22,6 +22,8 @@ except ImportError:
 
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPixmap
+from PySide6.QtWebEngineCore import QWebEnginePage
+from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame,
                                QGraphicsBlurEffect, QGraphicsPixmapItem,
                                QGraphicsScene, QHBoxLayout, QLabel, QLineEdit,
@@ -51,7 +53,7 @@ DIM = "#98989D"
 QSS = f"""
 * {{ font-family: "SF Pro Text", "PingFang SC", "Segoe UI",
      "Microsoft YaHei", sans-serif; color: {TEXT}; }}
-#Root {{ background: #18181C; }}
+#Root {{ background: transparent; }}
 #Glass {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
         stop:0 rgba(36,36,42,255), stop:0.5 rgba(28,28,32,255),
@@ -582,6 +584,39 @@ class NewServerDialog(QDialog):
         return ver, stype, server_dir, port, mod_version
 
 
+class _OobePage(QWebEnginePage):
+    """重写控制台回调 (PySide6 里给实例方法赋值不生效, 必须子类重写),
+    oobe:action 事件经此传回 Qt"""
+
+    def __init__(self, owner, parent=None):
+        super().__init__(parent)
+        self._owner = owner
+
+    def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+        self._owner._on_console(level, message, lineNumber, sourceID)
+
+
+class _PopupWebView(QWebEngineView):
+    """支持 target=_blank / window.open: 新窗口请求返回可用视图
+    (默认实现不处理, 外链点了没反应/空白)"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._wins = []
+
+    def createWindow(self, wtype):
+        from PySide6.QtCore import Qt as _Qt
+        w = _PopupWebView(self)
+        w.setAttribute(Qt.WA_DeleteOnClose)
+        # 普通带边框窗口: 有标题栏和关闭按钮 (之前无边框弹窗没法退出)
+        w.setWindowFlags(_Qt.Window)
+        w.setWindowTitle("1b1t")
+        w.resize(980, 640)
+        w.show()
+        self._wins.append(w)
+        return w
+
+
 class FirstRunWeb(QDialog):
     """首次启动 OOBE: Qt WebEngine 加载 oobe.html (Windows 11 Fluent 风格)
     HTML 里全部文案留空, 由本类经 oobe.setContent 运行时注入;
@@ -594,12 +629,13 @@ class FirstRunWeb(QDialog):
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setFixedSize(980, 640)
         self._want_new = True
-        self._view = QWebEngineView(self)
+        self._completed = False
+        self._view = _PopupWebView(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._view)
-        page = self._view.page()
-        page.javaScriptConsoleMessage = self._on_console
+        # 用子类页面接控制台事件 (赋值方式在 PySide6 不生效)
+        self._view.setPage(_OobePage(self, self._view))
         base = getattr(sys, "_MEIPASS",
                        os.path.dirname(os.path.abspath(__file__)))
         self._view.load(QUrl.fromLocalFile(
@@ -616,10 +652,9 @@ class FirstRunWeb(QDialog):
         except (IndexError, ValueError):
             return
         if msg.startswith("oobe:ready"):
-            # 注入动态内容: 版本号 + 品牌 logo
+            # 只注入动态版本号 (文案均已在 oobe.html 内)
             content = _json.dumps(
-                {"version": "v" + core.APP_VERSION,
-                 "logo": "file://" + _asset_path("logo.jpeg")},
+                {"version": "v" + core.APP_VERSION},
                 ensure_ascii=False)
             self._view.page().runJavaScript(
                 "window.oobe && window.oobe.setContent(" + content + ")")
@@ -642,7 +677,10 @@ class FirstRunWeb(QDialog):
                 self._want_new = True
             elif ev == "server-skip":
                 self._want_new = False
-            elif ev in ("finish", "skip"):
+            elif ev == "finish":
+                self._completed = True
+                self.accept()
+            elif ev == "skip":
                 self.accept()
 
 
@@ -651,6 +689,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("1b1t 开服工具")
         self.setWindowFlags(Qt.FramelessWindowHint)
+        # 圆角玻璃角落真透明, 不再露黑色方框 (Root 背景已透明)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         # 固定窗口尺寸: 防止详情页内容把窗口撑高(侧边栏底部按钮被挤出)
         self.setFixedSize(980, 640)
         self.drag_pos = None
@@ -1087,9 +1127,11 @@ class MainWindow(QMainWindow):
         dlg = FirstRunWeb(self)
         dlg.exec()
         want_new = dlg._want_new
-        st = core.load_settings()
-        st["first_run_done"] = "true"
-        core.save_settings(st)
+        # 只有完整走完向导才标记完成; 中途关掉/被杀下次继续引导
+        if dlg._completed:
+            st = core.load_settings()
+            st["first_run_done"] = "true"
+            core.save_settings(st)
         if want_new:
             self.new_server()
 
@@ -1841,45 +1883,6 @@ class MainWindow(QMainWindow):
         self.on_select(self.list.currentItem(), None)
 
 
-def _make_splash(pm):
-    """启动封面: 深色玻璃卡片 + 圆角 logo + 1b1t 标题"""
-    from PySide6.QtWidgets import QSplashScreen
-    from PySide6.QtGui import QPainterPath, QPen
-    W, H = 400, 460
-    canvas = QPixmap(W, H)
-    canvas.fill(Qt.transparent)
-    p = QPainter(canvas)
-    p.setRenderHint(QPainter.Antialiasing)
-    card = QPainterPath()
-    card.addRoundedRect(0, 0, W, H, 28, 28)
-    p.fillPath(card, QColor(28, 28, 33, 235))
-    p.setPen(QPen(QColor(255, 255, 255, 36), 1))
-    p.drawPath(card)
-    logo_pm = pm.scaled(280, 280, Qt.IgnoreAspectRatio,
-                        Qt.SmoothTransformation)
-    clip = QPainterPath()
-    clip.addRoundedRect(60, 48, 280, 280, 24, 24)
-    p.setClipPath(clip)
-    p.drawPixmap(60, 48, logo_pm)
-    p.setClipping(False)
-    p.setPen(QColor(245, 245, 247))
-    f = QFont()
-    f.setPixelSize(30)
-    f.setBold(True)
-    p.setFont(f)
-    p.drawText(0, 378, W, 40, Qt.AlignCenter, "1b1t")
-    p.setPen(QColor(152, 152, 157))
-    f2 = QFont()
-    f2.setPixelSize(14)
-    p.setFont(f2)
-    p.drawText(0, 414, W, 26, Qt.AlignCenter, "Minecraft 一键开服")
-    p.end()
-    s = QSplashScreen(canvas)
-    s.setWindowFlag(Qt.FramelessWindowHint, True)
-    s.setAttribute(Qt.WA_TranslucentBackground, True)
-    return s
-
-
 def _ensure_desktop_shortcut():
     """Linux deb 安装: 首次启动在桌面放带 logo 的快捷方式
     (dock 图标由 .desktop 的 Icon=1b1t + StartupWMClass 关联)"""
@@ -1895,7 +1898,8 @@ def _ensure_desktop_shortcut():
             dst = os.path.join(d, "1b1t.desktop")
             if not os.path.exists(dst):
                 try:
-                    import shutil, subprocess
+                    import shutil
+                    import subprocess
                     shutil.copy(src, dst)
                     os.chmod(dst, 0o755)
                     # GNOME 需 trusted 才显示桌面图标
@@ -1923,15 +1927,6 @@ def main():
     _ensure_desktop_shortcut()  # 桌面 logo 快捷方式 (仅 deb 安装, 首次)
     win = MainWindow()
     win.show()
-    # 启动封面: logo 卡片显示 1.4 秒, 主窗口就绪后收掉
-    try:
-        pm = QPixmap(_asset_path("logo.jpeg"))
-    except Exception:
-        pm = QPixmap()
-    if not pm.isNull():
-        splash = _make_splash(pm)
-        splash.show()
-        QTimer.singleShot(1400, lambda: splash.finish(win))
     sys.exit(app.exec())
 
 
